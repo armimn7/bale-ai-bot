@@ -1,0 +1,14 @@
+name = "bale-ai-bot"
+main = "worker.js"
+compatibility_date = "2024-09-23"
+
+[assets]
+directory = "./"
+binding = "ASSETS"
+
+[ai]
+binding = "AI"
+
+[[kv_namespaces]]
+binding = "KV"
+id = "YOUR_KV_NAMESPACE_ID"
