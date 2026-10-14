@@ -318,7 +318,7 @@ async function replyWithAI(chatId, text, env) {
 
     history.push({ role: 'assistant', content: reply });
     await saveHistory(chatId, history, env);
-    await sendMessage(chatId, `${modelDef.name}\n\n${reply}`, env);
+    await await sendMessage(chatId, reply, env);
   } catch (err) {
     console.error('AI run error:', err && err.message ? err.message : String(err));
     await sendMessage(chatId, '⚠️ خطا در دریافت پاسخ از مدل. چند لحظه دیگه دوباره امتحان کن یا با /model مدل رو عوض کن.', env);
