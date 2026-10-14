@@ -1,24 +1,128 @@
 // ============================================================
-// ربات ساده هوش مصنوعی بله (Bale) — Cloudflare Worker
+// ربات هوش مصنوعی بله (Bale) — Cloudflare Worker
+// نسخه ۲: fallback خودکار بین مدل‌ها + مکانیزم سکوت هوشمند
 // ============================================================
 
 const MODELS = [
-  { id: 'gpt120',   name: '🟢 GPT-OSS 120B (قوی‌ترین)', model: '@cf/openai/gpt-oss-120b' },
-  { id: 'gemma',    name: '🔵 Gemma 4 27B',              model: '@cf/google/gemma-4-26b-a4b-it' },
-  { id: 'qwen',     name: '🟣 Qwen3 30B',                model: '@cf/qwen/qwen3-30b-a3b-fp8' },
-  { id: 'llama',    name: '🟠 Llama 4 Scout',            model: '@cf/meta/llama-4-scout-17b-16e-instruct' },
-  { id: 'deepseek', name: '🔴 DeepSeek R1 (استدلالی)',   model: '@cf/deepseek-ai/deepseek-r1-distill-qwen-32b' },
-  { id: 'glm',      name: '🟡 GLM-4.7 Flash (کدنویسی)',  model: '@cf/zai-org/glm-4.7-flash' },
+  { id: 'gpt120',   name: '🟢 GPT-OSS 120B',      model: '@cf/openai/gpt-oss-120b' },
+  { id: 'gemma',    name: '🔵 Gemma 4 27B',        model: '@cf/google/gemma-4-26b-a4b-it' },
+  { id: 'qwen',     name: '🟣 Qwen3 30B',          model: '@cf/qwen/qwen3-30b-a3b-fp8' },
+  { id: 'llama',    name: '🟠 Llama 4 Scout',      model: '@cf/meta/llama-4-scout-17b-16e-instruct' },
+  { id: 'deepseek', name: '🔴 DeepSeek R1',        model: '@cf/deepseek-ai/deepseek-r1-distill-qwen-32b' },
+  { id: 'glm',      name: '🟡 GLM-4.7 Flash',      model: '@cf/zai-org/glm-4.7-flash' },
 ];
+
+const FALLBACK_ORDER = ['gemma', 'llama', 'qwen', 'gpt120', 'deepseek', 'glm'];
 
 const IMAGE_MODEL_FAST = '@cf/black-forest-labs/flux-1-schnell';
 const IMAGE_MODEL_HQ   = '@cf/stabilityai/stable-diffusion-xl-base-1.0';
-const DEFAULT_MODEL_ID = 'qwen';
+const DEFAULT_MODEL_ID = 'gemma';
 const MAX_HISTORY = 8;
 const HISTORY_TTL = 60 * 60 * 24 * 7;
 
+// مارکر سکوت در گروه. AI فقط اگه دقیقاً همین رو بفرسته، ربات ساکت می‌مونه.
+const NO_REPLY_MARKER = '__NO_REPLY__';
+
 function baleApi(token) {
   return `https://tapi.bale.ai/bot${token}`;
+}
+
+// ------------------------------------------------------------
+// System Prompt
+// ------------------------------------------------------------
+const BASE_PROMPT = `اسم تو ربات «باهم کتاب» هست. باید به زبان محاوره‌ای و محترمانه و با استفاده مناسب و بامزه از ایموجی‌ها و خیلی صمیمی ولی محترمانه جواب بدی.
+تو یکی از ادمین‌های گروه امانت دوست‌داشتنی هستی باید مثل یه ادمین حرفه ای باشی و اصولی جواب بدی و باید به اعضا کمک کنی کتاب امانت بدن یا کتاب امانت بگیرن.
+و به این کار هم تشویقشون کنی و انگیزه بدی.
+اگه کتابی رو نمی‌شناسی نباید به هیچ وجه دربارش توضیح بدی و از خودت نباید چیزی بگی . اصلا پیش فرضت این باشه که کتابی رو نمیشناسی. چون هنوز ربات کاملی نشدی.
+نکته دیگه اینکه همیشه نیاز نیست همه چی رو بگی باید خودت بسنجی و مثل یه انسان جواب بدی نه یک ربات. مثلا یکی گفت سلام فوری نگو سلام اینجا گروه امانت دوست داشتنی هست و...!!!
+البته این به این معنی نیست که مثلا لزوما یکی گقت سلام جواب ندی ! مثال گفتم فقط!! باید مثل یه ادمین انسان فکر و رفتار کنی... در کل باید یجوری پیام بدی که گروه فعال و زنده و پر نشاط باشه و خیلی هم از اون طرف لوس و بی مزه و مسخره و شلوغ نشه...
+دقت داشته باش
+حواست باشه که از موضوع گروه و کانال «امانت دوست داشتنی» فقط و فقط کتابه . و نباید موضوع حاشیه ای تو گروه مطرح بشه و اگه شد باید تدکر داده بشه
+مثلا وقتی تبلیغات فرستادن یا مطالب نا مرتبط و... باید تذکر بدی که نباید این کار رو کنن . به صورت صمیمانه. دلیلش رو هم بگو
+بگو بخاطر اینکه گروه کاربردی بمونه و شلوغ نشه
+همچنین قبلا پیام های تقریبا رسمی تو گروه و کانال گذاشتیم که بهت اطلاعات خوبی میده که بدونی اینجا کجاست ولی دقت کن اینا رسمی هستن یه ذره تو باید مثل یه انسان باشی ! دقیقا مثل یه ادمین انسان ، محاوره ای و صمیمی و طبیعی
+.:
+1:
+سلااام!
+روزی چقدر کتاب میخونی؟
+هیچی؟
+کتاب خوب پیدا نمی کنی؟
+کتاب با قیمت مناسب پیدا نمی کنی؟
+
+ ✌️تو این کانال و گروهش می تونی کتابای خوب و قشنگی رو که خوندی معرفی کنی، امانت بدی و *رایگان* امانت بگیری!
+
+لینک گروه امانت کتاب ها:
+ble.ir/join/FuGWc5CdFW
+
+لینک کانال قوانین گروه و معرفی کتاب ها:
+ble.ir/join/BZY8h679sL
+
+با هم کتاب بخونیم 😊:
+@baham_ketab
+
+2:
+توی این کانال کتاب های مختلف رو معرفی می کنیم،
+کتابایی که شما می خواید امانت بدید یا کتاب های کتابخونه رو اینجا اعلام می کنیم.
+
+با هم از اهمیت کتاب و کتابخونی حرف میزنیم.
+بریده هایی از کتاب های مختلف رو باهم می خونیم و لذت میبریم.
+و خلاصه کلی کار باحال با این یار مهربون داریم!!
+
+
+👈اگه دوست دارید کتابی رو به کسی امانت بدید
+یا کتابی رو امانت بگیرید، عضو گروه امانت دوست داشتنی بشید: ble.ir/join/FuGWc5CdFW
+
+با ما همراه باشید!
+@baham_ketab
+
+3:
+گروه امانت دوست داشتنی چند ساله توی ایتا راه اندازی شده و تا الان کلی کتاب بین اعضا رد و بدل شده
+با توجه به اینکه خیلی ها ممکنه در بله فعال تر باشن یا اینجا راحت تر باشن، گروه و کانال امانت دوست داشتنی در اینجا هم تشکیل شد
+
+ گروه و کانال ایتامون هم اینجاست خدمت شما:
+
+
+گروه ایتا: https://eitaa.com/joinchat/3540189368C0a3ead09f4
+
+کانال ایتا:https://eitaa.com/joinchat/2384527687C7621d0818c
+
+
+گروه امانت دوست داشتنی در بله📚😍 :
+ble.ir/join/FuGWc5CdFW
+با هم کتاب بخونیم 😊 :
+@baham_ketab
+
+4:
+پیشنهاد میکنم برای پر استفاده تر شدن و کاربردی تر شدن گروه ، حتما امانت دوست داشتنی رو به آشنایانتون معرفی کنید و لینکش رو بفرستید تا عضو بشن
+* یا حتی خودتون عضوشون کنید ( توی گروه این امکان وجود داره)*
+
+با این کار تنوع کتاب های امانی بیشتر میشه و در نتیجه راحت تر کتاب مورد نظرتون رو میتونید پیدا کنید
+5:
+اگر کسی کتابی داره که امکان امانتش رو داره
+و دوست داره یه کار خیر بکنه
+ممنون میشیم تو گروه کتابش رو معرفی کنه تا اگه کسی خواست امانت بگیره
+همچنین اگه کتابی رو دوست داشتید بخونید بدون هزینه
+فقط کافیه اسم کتاب رو اینجا بفرستید
+تا اگه کسی داشت بهتون بگه و هماهنگ کنید
+خیلی راحت بدون هیچ هزینه ای کتاب رو امانت بگیرید و بخونید
+اگه اعلام کردن کتاب نباشه واقعا گروه بدرد نمیخوره
+برعکس اگه اعلام کردن کتاب تو گروه روال بشه
+هم تو هزینه صرفه جویی میشه
+هم باعث ترویج کتابخوانی میشه
+هم یه کار خیر جریان پیدا میکنه
+
+از این پیام های بالا فقط اطلاعات لازم رو بفهم قرار نیست دقیقا کپی اینها جواب بدی`;
+
+function buildSystemPrompt(isGroup) {
+  if (isGroup) {
+    return BASE_PROMPT + `\n\nقانون مهم برای سکوت:
+تو توی گروهی و همه پیام‌ها رو می‌خونی، ولی همیشه نباید جواب بدی.
+قبل از پاسخ، خوب فکر کن بهه عنوان یک ادمین حرفه ای: آیا جواب دادن لازمه؟ 
+اگه جواب دادن لازم نیست، فقط و فقط عبارت دقیق زیر رو بنویس و هیچ چیز دیگه‌ای اضافه نکن (نه ایموجی، نه نقطه، نه فاصله اضافه):
+${NO_REPLY_MARKER}
+اگه جواب لازم یا خوبه، طبیعی و مفید جواب بده.`;
+  }
+  return BASE_PROMPT;
 }
 
 // ------------------------------------------------------------
@@ -137,7 +241,7 @@ async function setupWebhook() {
 }
 
 // ------------------------------------------------------------
-// پردازش پیام‌های ورودی از بله
+// پردازش پیام‌های ورودی
 // ------------------------------------------------------------
 async function handleUpdate(update, env) {
   if (update.callback_query) {
@@ -153,12 +257,10 @@ async function handleMessage(message, env) {
   const chatType = message.chat.type;
   const text = (message.text || '').trim();
 
-  // اگه پیام متنی نیست، ساکت بمون
   if (!text) return;
 
   const isGroup = (chatType === 'group' || chatType === 'supergroup');
 
-  // ---------- دستورات ----------
   if (text === '/start') {
     await sendMessage(chatId, 'سلام 👋 من «باهم کتاب» هستم، دستیار گروه امانت کتاب.\nبرای انتخاب مدل از /model استفاده کن.\nبرای ساخت تصویر: /image توضیح تصویر', env, message.message_id);
     await sendModelPicker(chatId, env);
@@ -198,11 +300,8 @@ async function handleMessage(message, env) {
     return;
   }
 
-  // اگه با / شروع بشه ولی دستور شناخته‌شده نباشه، نادیده بگیر
   if (text.startsWith('/')) return;
 
-  // ---------- پیام عادی ----------
-  // چه خصوصی چه گروه: پیام رو بفرست به AI. توی گروه AI خودش تصمیم می‌گیره جواب بده یا [SKIP].
   await sendChatAction(chatId, env);
   await replyWithAI(chatId, text, env, message.message_id, isGroup);
 }
@@ -223,129 +322,73 @@ async function handleCallback(cb, env) {
 }
 
 // ------------------------------------------------------------
-// فراخوانی Workers AI و مدیریت تاریخچه مکالمه
+// فراخوانی Workers AI با fallback خودکار بین مدل‌ها
 // ------------------------------------------------------------
+async function runAIWithFallback(env, preferredModelId, messages, maxTokens = 1536) {
+  const order = [preferredModelId];
+  for (const id of FALLBACK_ORDER) {
+    if (id !== preferredModelId && !order.includes(id)) order.push(id);
+  }
+
+  let lastError = null;
+
+  for (const modelId of order) {
+    const modelDef = MODELS.find((m) => m.id === modelId);
+    if (!modelDef) continue;
+
+    try {
+      const result = await env.AI.run(modelDef.model, {
+        messages,
+        max_tokens: maxTokens,
+      });
+
+      const reply = extractText(result);
+      if (reply) {
+        return { reply, modelDef };
+      }
+
+      console.warn(`Model ${modelId} returned empty reply, trying next...`);
+    } catch (err) {
+      lastError = err;
+      console.error(`Model ${modelId} failed:`, err && err.message ? err.message : String(err));
+    }
+  }
+
+  throw lastError || new Error('All models failed to respond');
+}
+
 async function replyWithAI(chatId, text, env, replyToMessageId, isGroup) {
   const modelId = (await env.KV.get(`model:${chatId}`)) || DEFAULT_MODEL_ID;
-  const modelDef = MODELS.find((m) => m.id === modelId) || MODELS.find((m) => m.id === DEFAULT_MODEL_ID);
 
   const history = await getHistory(chatId, env);
   history.push({ role: 'user', content: text });
 
-  // پرامپت پایه
-  let systemPrompt = ` اسم تو «باهم کتاب» هست. باید به زبان محاوره‌ای و محترمانه و با استفاده مناسب و بامزه از ایموجی‌ها و خیلی صمیمی ولی محترمانه  جواب بدی.
-تو یکی از ادمین‌های گروه امانت دوست‌داشتنی هستی باید مثل یه ادمین حرفه ای باشی و اصولی جواب بدی و باید به اعضا کمک کنی کتاب امانت بدن یا کتاب امانت بگیرن.
-و به این کار هم تشویقشون کنی و انگیزه بدی.
-اگه کتابی رو نمی‌شناسی نباید به هیچ وجه دربارش توضیح بدی و از خودت نباید چیزی بگی .
-نکته دیگه اینکه همیشه نیاز نیست همه چی رو بگی  باید خودت بسنجی و مثل یه انسان جواب بدی نه یک ربات. مثلا یکی گفت سلام فوری نگو سلام اینجا گروه امانت دوست داشتنی هست و...!!! 
-البته این به این معنی نیست که مثلا لزوما یکی گقت سلام جواب ندی ! مثال گفتم فقط!! باید مثل یه ادمین انسان فکر و رفتار کنی... در کل باید یجوری پیام بدی که گروه فعال و زنده و پر نشاط باشه و خیلی هم از اون طرف لوس و بی مزه و مسخره و شلوغ نشه...
-دقت داشته باش 
-حواست باشه که از موضوع گروه و کانال «امانت دوست داشتنی» فقط و فقط کتابه . و نباید موضوع حاشیه ای تو گروه مطرح بشه و اگه شد باید تدکر داده بشه
-مثلا وقتی تبلیغات فرستادن یا مطالب نا مرتبط و... باید تذکر بدی که نباید این کار رو کنن . به صورت صمیمانه. دلیلش رو هم بگو
-بگو بخاطر اینکه گروه کاربردی بمونه و شلوغ نشه
-همچنین قبلا پیام های تقریبا رسمی تو گروه و کانال گذاشتیم که بهت اطلاعات خوبی میده که بدونی اینجا کجاست ولی دقت کن اینا رسمی هستن یه ذره تو باید مثل یه انسان باشی ! دقیقا مثل یه ادمین انسان ، محاوره ای و صمیمی و طبیعی
-.:
-1:
-سلااام!
-روزی چقدر کتاب میخونی؟
-هیچی؟! 
-کتاب خوب پیدا نمی کنی؟
-کتاب با قیمت مناسب پیدا نمی کنی؟
-
- ✌️تو این کانال و گروهش می تونی کتابای خوب و قشنگی رو که خوندی معرفی کنی،  امانت بدی و *رایگان* امانت بگیری! 
-
-لینک گروه امانت کتاب ها: 
-ble.ir/join/FuGWc5CdFW
-
-لینک کانال قوانین گروه و معرفی کتاب ها: 
-ble.ir/join/BZY8h679sL
-
-با هم کتاب بخونیم 😊: 
-@baham_ketab
-
-2:
-توی این کانال کتاب های مختلف رو معرفی می کنیم، 
- کتابایی  که شما می خواید امانت بدید یا کتاب های کتابخونه رو اینجا اعلام می کنیم. 
-
-با هم از اهمیت کتاب و کتابخونی حرف میزنیم. 
-بریده هایی از کتاب های مختلف رو باهم می خونیم و لذت میبریم. 
-و خلاصه کلی کار باحال با این یار مهربون داریم!!
-
-
-👈اگه دوست دارید کتابی رو به کسی امانت بدید
-یا کتابی رو امانت بگیرید، عضو گروه امانت دوست داشتنی بشید:  ble.ir/join/FuGWc5CdFW
-
-با ما همراه باشید! 
-@baham_ketab
-
-3:
-گروه امانت دوست داشتنی چند ساله توی ایتا راه اندازی شده و تا الان کلی کتاب بین اعضا رد و بدل شده
-با توجه به اینکه خیلی ها ممکنه در بله فعال تر باشن یا اینجا راحت تر باشن، گروه و کانال امانت دوست داشتنی در اینجا هم تشکیل شد
-
- گروه و کانال ایتامون هم اینجاست خدمت شما:
-
-
-گروه ایتا: https://eitaa.com/joinchat/3540189368C0a3ead09f8
-
-کانال ایتا:https://eitaa.com/joinchat/2384527687C7621d0818c
-
-
-گروه امانت دوست داشتنی در بله📚😍 :
-ble.ir/join/FuGWc5CdFW
-با هم کتاب بخونیم 😊 : 
-@baham_ketab
-
-4:
-پیشنهاد میکنم برای پر استفاده تر شدن و کاربردی تر شدن گروه ، حتما امانت دوست داشتنی رو به آشنایانتون معرفی کنید و لینکش رو بفرستید تا عضو بشن
-* یا حتی خودتون عضوشون کنید ( توی گروه این امکان وجود داره)*
-
-با این کار تنوع کتاب های امانی بیشتر میشه و در نتیجه راحت تر کتاب مورد نظرتون رو میتونید پیدا کنید
-5:
-اگر کسی کتابی داره که امکان امانتش رو داره
-و دوست داره یه کار خیر بکنه
-ممنون میشیم تو گروه کتابش رو معرفی کنه تا اگه کسی خواست امانت بگیره
-همچنین اگه کتابی رو دوست داشتید بخونید بدون هزینه
-فقط کافیه اسم کتاب رو اینجا بفرستید
-تا اگه کسی داشت بهتون بگه و هماهنگ کنید
-خیلی راحت بدون هیچ هزینه ای کتاب رو امانت بگیرید و بخونید
-اگه اعلام کردن کتاب نباشه واقعا گروه بدرد نمیخوره
-برعکس اگه اعلام کردن کتاب تو گروه روال بشه
-هم تو هزینه صرفه جویی میشه
-هم باعث ترویج کتابخوانی میشه 
-هم یه کار خیر جریان پیدا میکنه
-
-
-
-
-`;
-
-  // فقط توی گروه، قانون سکوت رو اضافه کن
-  if (isGroup) {
-    systemPrompt += `\n\nتو توی یک گروه هستی و همه پیام‌های اعضا رو می‌خونی.
-وقتی خوب پیامی اومد خوب پیام رو بخون بفهم ببین اصلا جواب دادن بهش لازمه یا نه اگه جواب دادن به آن لازم نیست، فقط و فقط عبارت دقیق [SKIP] را بنویس و هیچ چیز دیگری ننویس.
-در غیر این صورت، پاسخ مفید و مرتبط بده.`;
-  }
+  const systemPrompt = buildSystemPrompt(isGroup);
 
   try {
-    const result = await env.AI.run(modelDef.model, {
-      messages: [
-        { role: 'system', content: systemPrompt },
-        ...history,
-      ],
-      max_tokens: 1536,
-    });
+    const { reply } = await runAIWithFallback(env, modelId, [
+      { role: 'system', content: systemPrompt },
+      ...history,
+    ]);
 
-    const reply = extractText(result);
-
-    if (!reply) {
-      console.error('Empty/unrecognized AI response shape:', JSON.stringify(result).slice(0, 500));
-      await sendMessage(chatId, `⚠️ پاسخی دریافت نشد. با /model یه مدل دیگه رو امتحان کن.`, env, replyToMessageId);
-      return;
+    if (isGroup) {
+      const trimmed = reply.trim();
+      if (trimmed === NO_REPLY_MARKER || trimmed.includes(NO_REPLY_MARKER)) {
+        const cleaned = trimmed.replace(NO_REPLY_MARKER, '').trim();
+        if (!cleaned) {
+          history.pop();
+          await saveHistory(chatId, history, env);
+          return;
+        }
+        history.push({ role: 'assistant', content: cleaned });
+        await saveHistory(chatId, history, env);
+        await sendMessage(chatId, cleaned, env, replyToMessageId);
+        return;
+      }
     }
 
-    // توی گروه: اگه AI گفت [SKIP]، ساکت بمون (فقط تاریخچه رو ذخیره کن)
-    if (isGroup && reply.includes('[SKIP]')) {
-      await saveHistory(chatId, history, env);
+    if (!reply) {
+      await sendMessage(chatId, `⚠️ پاسخی دریافت نشد.`, env, replyToMessageId);
       return;
     }
 
@@ -353,8 +396,8 @@ ble.ir/join/FuGWc5CdFW
     await saveHistory(chatId, history, env);
     await sendMessage(chatId, reply, env, replyToMessageId);
   } catch (err) {
-    console.error('AI run error:', err && err.message ? err.message : String(err));
-    await sendMessage(chatId, '⚠️ خطا در دریافت پاسخ. چند لحظه دیگه دوباره امتحان کن.', env, replyToMessageId);
+    console.error('AI run error (all models):', err && err.message ? err.message : String(err));
+    await sendMessage(chatId, '⚠️ الان نتونستم جواب بدم، چند لحظه دیگه دوباره امتحان کن.', env, replyToMessageId);
   }
 }
 
@@ -407,7 +450,7 @@ async function saveHistory(chatId, history, env) {
 }
 
 // ------------------------------------------------------------
-// توابع کمکی برای صحبت با API بله
+// توابع کمکی بله
 // ------------------------------------------------------------
 async function sendMessage(chatId, text, env, replyToMessageId = null) {
   const body = { chat_id: chatId, text };
