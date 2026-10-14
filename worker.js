@@ -266,7 +266,7 @@ async function handleMessage(message, env) {
   }
 
   if (!text) {
-    await sendMessage(chatId, 'فعلاً فقط پیام متنی پشتیبانی میشه.', env);
+    
     return;
   }
 
