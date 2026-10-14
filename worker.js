@@ -153,86 +153,58 @@ async function handleMessage(message, env) {
   const chatType = message.chat.type;
   const text = (message.text || '').trim();
 
-  // اگه پیام متنی نیست، ساکت بمون (هیچی نفرست)
+  // اگه پیام متنی نیست، ساکت بمون
   if (!text) return;
 
-  // دستورات همیشه جواب می‌گیرن
-  const isCommand = text.startsWith('/');
+  const isGroup = (chatType === 'group' || chatType === 'supergroup');
 
-  if (isCommand) {
-    if (text === '/start') {
-      await sendMessage(chatId, 'سلام 👋 من «باهم کتاب» هستم، دستیار گروه امانت کتاب.\nبرای انتخاب مدل از /model استفاده کن.\nبرای ساخت تصویر: /image توضیح تصویر', env, message.message_id);
-      await sendModelPicker(chatId, env);
-      return;
-    }
-
-    if (text === '/model') {
-      await sendModelPicker(chatId, env);
-      return;
-    }
-
-    if (text === '/reset') {
-      await env.KV.delete(`history:${chatId}`);
-      await sendMessage(chatId, '✅ حافظه مکالمه پاک شد.', env, message.message_id);
-      return;
-    }
-
-    if (text === '/image' || text.startsWith('/image ')) {
-      const prompt = text.slice('/image'.length).trim();
-      if (!prompt) {
-        await sendMessage(chatId, 'بعد از دستور /image توضیح تصویر رو بنویس.\nمثال: /image یک گربه فضانورد روی ماه', env, message.message_id);
-        return;
-      }
-      await sendChatAction(chatId, env, 'upload_photo');
-      await replyWithImage(chatId, prompt, IMAGE_MODEL_FAST, env);
-      return;
-    }
-
-    if (text === '/imagehd' || text.startsWith('/imagehd ')) {
-      const prompt = text.slice('/imagehd'.length).trim();
-      if (!prompt) {
-        await sendMessage(chatId, 'بعد از دستور /imagehd توضیح تصویر رو بنویس.\nمثال: /imagehd یک منظره کوهستانی در غروب', env, message.message_id);
-        return;
-      }
-      await sendChatAction(chatId, env, 'upload_photo');
-      await replyWithImage(chatId, prompt, IMAGE_MODEL_HQ, env);
-      return;
-    }
-
-    // دستور ناشناخته
+  // ---------- دستورات ----------
+  if (text === '/start') {
+    await sendMessage(chatId, 'سلام 👋 من «باهم کتاب» هستم، دستیار گروه امانت کتاب.\nبرای انتخاب مدل از /model استفاده کن.\nبرای ساخت تصویر: /image توضیح تصویر', env, message.message_id);
+    await sendModelPicker(chatId, env);
     return;
   }
 
-  // ---------- تصمیم‌گیری: ربات جواب بده یا نه؟ ----------
-  let shouldRespond = false;
-
-  if (chatType === 'private') {
-    // توی چت خصوصی همیشه جواب بده
-    shouldRespond = true;
-  } else {
-    // توی گروه/سوپرگروه: فقط اگه منشن شده یا ریپلای به ربات باشه
-
-    // چک ۱: ریپلای به پیام ربات؟
-    const repliedTo = message.reply_to_message;
-    if (repliedTo && repliedTo.from && repliedTo.from.is_bot) {
-      shouldRespond = true;
-    }
-
-    // چک ۲: منشن ربات توی متن؟
-    const botUsername = env.BOT_USERNAME || '';
-    if (botUsername && text.includes('@' + botUsername)) {
-      shouldRespond = true;
-    }
+  if (text === '/model') {
+    await sendModelPicker(chatId, env);
+    return;
   }
 
-  if (!shouldRespond) return;
+  if (text === '/reset') {
+    await env.KV.delete(`history:${chatId}`);
+    await sendMessage(chatId, '✅ حافظه مکالمه پاک شد.', env, message.message_id);
+    return;
+  }
 
-  // متن رو از منشن پاک کن (که به AI نره)
-  const botUsername = env.BOT_USERNAME || '';
-  const cleanText = botUsername ? text.replace('@' + botUsername, '').trim() : text;
+  if (text === '/image' || text.startsWith('/image ')) {
+    const prompt = text.slice('/image'.length).trim();
+    if (!prompt) {
+      await sendMessage(chatId, 'بعد از دستور /image توضیح تصویر رو بنویس.\nمثال: /image یک گربه فضانورد روی ماه', env, message.message_id);
+      return;
+    }
+    await sendChatAction(chatId, env, 'upload_photo');
+    await replyWithImage(chatId, prompt, IMAGE_MODEL_FAST, env);
+    return;
+  }
 
+  if (text === '/imagehd' || text.startsWith('/imagehd ')) {
+    const prompt = text.slice('/imagehd'.length).trim();
+    if (!prompt) {
+      await sendMessage(chatId, 'بعد از دستور /imagehd توضیح تصویر رو بنویس.\nمثال: /imagehd یک منظره کوهستانی در غروب', env, message.message_id);
+      return;
+    }
+    await sendChatAction(chatId, env, 'upload_photo');
+    await replyWithImage(chatId, prompt, IMAGE_MODEL_HQ, env);
+    return;
+  }
+
+  // اگه با / شروع بشه ولی دستور شناخته‌شده نباشه، نادیده بگیر
+  if (text.startsWith('/')) return;
+
+  // ---------- پیام عادی ----------
+  // چه خصوصی چه گروه: پیام رو بفرست به AI. توی گروه AI خودش تصمیم می‌گیره جواب بده یا [SKIP].
   await sendChatAction(chatId, env);
-  await replyWithAI(chatId, cleanText, env, message.message_id);
+  await replyWithAI(chatId, text, env, message.message_id, isGroup);
 }
 
 async function handleCallback(cb, env) {
@@ -253,14 +225,101 @@ async function handleCallback(cb, env) {
 // ------------------------------------------------------------
 // فراخوانی Workers AI و مدیریت تاریخچه مکالمه
 // ------------------------------------------------------------
-async function replyWithAI(chatId, text, env, replyToMessageId) {
+async function replyWithAI(chatId, text, env, replyToMessageId, isGroup) {
   const modelId = (await env.KV.get(`model:${chatId}`)) || DEFAULT_MODEL_ID;
   const modelDef = MODELS.find((m) => m.id === modelId) || MODELS.find((m) => m.id === DEFAULT_MODEL_ID);
 
   const history = await getHistory(chatId, env);
   history.push({ role: 'user', content: text });
 
-  const systemPrompt = 'اسم تو «باهم کتاب» هست. باید به زبان محاوره‌ای و محترمانه و با استفاده مناسب و بامزه از ایموجی‌ها و صمیمی جواب بدی. تو یکی از ادمین‌های گروه امانت دوست‌داشتنی هستی و باید به اعضا کمک کنی کتاب امانت بدن یا کتاب امانت بگیرن. و به این کار هم تشویقشون کنی و انگیزه بدی. اگه کتابی رو نمی‌شناسی نباید به هیچ وجه دربارش توضیح بدی و از خودت نباید چیزی بگی.';
+  // پرامپت پایه
+  let systemPrompt = ` اسم تو «باهم کتاب» هست. باید به زبان محاوره‌ای و محترمانه و با استفاده مناسب و بامزه از ایموجی‌ها و خیلی صمیمی ولی محترمانه  جواب بدی.
+تو یکی از ادمین‌های گروه امانت دوست‌داشتنی هستی باید مثل یه ادمین حرفه ای باشی و اصولی جواب بدی و باید به اعضا کمک کنی کتاب امانت بدن یا کتاب امانت بگیرن.
+و به این کار هم تشویقشون کنی و انگیزه بدی.
+اگه کتابی رو نمی‌شناسی نباید به هیچ وجه دربارش توضیح بدی و از خودت نباید چیزی بگی .
+نکته دیگه اینکه همیشه نیاز نیست همه چی رو بگی  باید خودت بسنجی و مثل یه انسان جواب بدی نه یک ربات. مثلا یکی گفت سلام فوری نگو سلام اینجا گروه امانت دوست داشتنی هست و...!!!  دقت داشته باش 
+همچنین قبلا پیام های تقریبا رسمی تو گروه و کانال گذاشتیم که بهت اطلاعات خوبی میده که بدونی اینجا کجاست ولی دقت کن اینا رسمی هستن یه ذره تو باید مثل یه انسان باشی ! دقیقا مثل یه ادمین انسان ، محاوره ای و صمیمی و طبیعی
+.:
+1:
+سلااام!
+روزی چقدر کتاب میخونی؟
+هیچی؟! 
+کتاب خوب پیدا نمی کنی؟
+کتاب با قیمت مناسب پیدا نمی کنی؟
+
+ ✌️تو این کانال و گروهش می تونی کتابای خوب و قشنگی رو که خوندی معرفی کنی،  امانت بدی و *رایگان* امانت بگیری! 
+
+لینک گروه امانت کتاب ها: 
+ble.ir/join/FuGWc5CdFW
+
+لینک کانال قوانین گروه و معرفی کتاب ها: 
+ble.ir/join/BZY8h679sL
+
+با هم کتاب بخونیم 😊: 
+@baham_ketab
+
+2:
+توی این کانال کتاب های مختلف رو معرفی می کنیم، 
+ کتابایی  که شما می خواید امانت بدید یا کتاب های کتابخونه رو اینجا اعلام می کنیم. 
+
+با هم از اهمیت کتاب و کتابخونی حرف میزنیم. 
+بریده هایی از کتاب های مختلف رو باهم می خونیم و لذت میبریم. 
+و خلاصه کلی کار باحال با این یار مهربون داریم!!
+
+
+👈اگه دوست دارید کتابی رو به کسی امانت بدید
+یا کتابی رو امانت بگیرید، عضو گروه امانت دوست داشتنی بشید:  ble.ir/join/FuGWc5CdFW
+
+با ما همراه باشید! 
+@baham_ketab
+
+3:
+گروه امانت دوست داشتنی چند ساله توی ایتا راه اندازی شده و تا الان کلی کتاب بین اعضا رد و بدل شده
+با توجه به اینکه خیلی ها ممکنه در بله فعال تر باشن یا اینجا راحت تر باشن، گروه و کانال امانت دوست داشتنی در اینجا هم تشکیل شد
+
+ گروه و کانال ایتامون هم اینجاست خدمت شما:
+
+
+گروه ایتا: https://eitaa.com/joinchat/3540189368C0a3ead09f8
+
+کانال ایتا:https://eitaa.com/joinchat/2384527687C7621d0818c
+
+
+گروه امانت دوست داشتنی در بله📚😍 :
+ble.ir/join/FuGWc5CdFW
+با هم کتاب بخونیم 😊 : 
+@baham_ketab
+
+4:
+پیشنهاد میکنم برای پر استفاده تر شدن و کاربردی تر شدن گروه ، حتما امانت دوست داشتنی رو به آشنایانتون معرفی کنید و لینکش رو بفرستید تا عضو بشن
+* یا حتی خودتون عضوشون کنید ( توی گروه این امکان وجود داره)*
+
+با این کار تنوع کتاب های امانی بیشتر میشه و در نتیجه راحت تر کتاب مورد نظرتون رو میتونید پیدا کنید
+5:
+اگر کسی کتابی داره که امکان امانتش رو داره
+و دوست داره یه کار خیر بکنه
+ممنون میشیم تو گروه کتابش رو معرفی کنه تا اگه کسی خواست امانت بگیره
+همچنین اگه کتابی رو دوست داشتید بخونید بدون هزینه
+فقط کافیه اسم کتاب رو اینجا بفرستید
+تا اگه کسی داشت بهتون بگه و هماهنگ کنید
+خیلی راحت بدون هیچ هزینه ای کتاب رو امانت بگیرید و بخونید
+اگه اعلام کردن کتاب نباشه واقعا گروه بدرد نمیخوره
+برعکس اگه اعلام کردن کتاب تو گروه روال بشه
+هم تو هزینه صرفه جویی میشه
+هم باعث ترویج کتابخوانی میشه 
+هم یه کار خیر جریان پیدا میکنه
+
+
+
+
+`;
+
+  // فقط توی گروه، قانون سکوت رو اضافه کن
+  if (isGroup) {
+    systemPrompt += `\n\nتو توی یک گروه هستی و همه پیام‌های اعضا رو می‌خونی.
+وقتی خوب پیامی اومد خوب پیام رو بخون بفهم ببین اصلا جواب دادن بهش لازمه یا نه اگه جواب دادن به آن لازم نیست، فقط و فقط عبارت دقیق [SKIP] را بنویس و هیچ چیز دیگری ننویس.
+در غیر این صورت، پاسخ مفید و مرتبط بده.`;
+  }
 
   try {
     const result = await env.AI.run(modelDef.model, {
@@ -276,6 +335,12 @@ async function replyWithAI(chatId, text, env, replyToMessageId) {
     if (!reply) {
       console.error('Empty/unrecognized AI response shape:', JSON.stringify(result).slice(0, 500));
       await sendMessage(chatId, `⚠️ پاسخی دریافت نشد. با /model یه مدل دیگه رو امتحان کن.`, env, replyToMessageId);
+      return;
+    }
+
+    // توی گروه: اگه AI گفت [SKIP]، ساکت بمون (فقط تاریخچه رو ذخیره کن)
+    if (isGroup && reply.includes('[SKIP]')) {
+      await saveHistory(chatId, history, env);
       return;
     }
 
