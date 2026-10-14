@@ -1,23 +1,7 @@
 // ============================================================
 // ربات ساده هوش مصنوعی بله (Bale) — Cloudflare Worker
-// فقط از Workers AI خود کلادفلر استفاده می‌کنه (بدون Gemini/Groq)
-//
-// متغیرهای محیطی لازم (Settings → Variables and Secrets):
-//   BALE_BOT_TOKEN  — توکن ربات (از botfather@ در بله بگیر)
-//   WORKER_DOMAIN   — دامنه ورکر، مثلاً hamedai.xxx.workers.dev
-//
-// Bindings لازم (Settings → Bindings):
-//   AI   → Workers AI
-//   KV   → یک KV Namespace (برای ذخیره تاریخچه و مدل انتخابی هر کاربر)
-//
-// بعد از دیپلوی، یک‌بار این آدرس رو باز کن تا webhook ثبت بشه:
-//   https://<WORKER_DOMAIN>/setWebhook
 // ============================================================
 
-// مدل‌های متنی Workers AI که ربات ازشون استفاده می‌کنه.
-// نکته: مدل‌های خانواده GPT-OSS با فرمت «Responses API» جواب میدن
-// (ساختار output به‌جای رشته ساده response)، برای همین تابع
-// extractText پایین‌تر هر دو فرمت رو پشتیبانی می‌کنه.
 const MODELS = [
   { id: 'gpt120',   name: '🟢 GPT-OSS 120B (قوی‌ترین)', model: '@cf/openai/gpt-oss-120b' },
   { id: 'gemma',    name: '🔵 Gemma 4 27B',              model: '@cf/google/gemma-4-26b-a4b-it' },
@@ -27,13 +11,11 @@ const MODELS = [
   { id: 'glm',      name: '🟡 GLM-4.7 Flash (کدنویسی)',  model: '@cf/zai-org/glm-4.7-flash' },
 ];
 
-// دو مدل تصویرسازی، هر دو رایگان و میزبانی خود کلادفلر (بدون نیاز به دسترسی Partner):
-// یکی سریع برای استفاده روزمره، یکی با جزئیات بیشتر و کندتر
 const IMAGE_MODEL_FAST = '@cf/black-forest-labs/flux-1-schnell';
 const IMAGE_MODEL_HQ   = '@cf/stabilityai/stable-diffusion-xl-base-1.0';
-const DEFAULT_MODEL_ID = 'qwen'; // پایدارترین و سریع‌ترین مدل به‌عنوان پیش‌فرض
-const MAX_HISTORY = 8; // تعداد پیام‌هایی که در حافظه هر کاربر نگه داشته میشه (۴ رفت‌وبرگشت)
-const HISTORY_TTL = 60 * 60 * 24 * 7; // یک هفته
+const DEFAULT_MODEL_ID = 'qwen';
+const MAX_HISTORY = 8;
+const HISTORY_TTL = 60 * 60 * 24 * 7;
 
 function baleApi(token) {
   return `https://tapi.bale.ai/bot${token}`;
@@ -98,85 +80,31 @@ function renderStatusPage() {
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>ربات هوش مصنوعی بله</title>
 <style>
-  body {
-    font-family: Tahoma, Vazirmatn, sans-serif;
-    background: #0f172a;
-    color: #e2e8f0;
-    margin: 0;
-    padding: 40px 20px;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-  }
-  .card {
-    background: #1e293b;
-    border-radius: 16px;
-    padding: 28px;
-    max-width: 480px;
-    width: 100%;
-    box-shadow: 0 8px 24px rgba(0,0,0,0.3);
-    margin-bottom: 20px;
-  }
+  body { font-family: Tahoma, Vazirmatn, sans-serif; background: #0f172a; color: #e2e8f0; margin: 0; padding: 40px 20px; display: flex; flex-direction: column; align-items: center; }
+  .card { background: #1e293b; border-radius: 16px; padding: 28px; max-width: 480px; width: 100%; box-shadow: 0 8px 24px rgba(0,0,0,0.3); margin-bottom: 20px; }
   h1 { font-size: 20px; margin-top: 0; }
   h2 { font-size: 16px; color: #94a3b8; margin-bottom: 10px; }
-  button {
-    background: linear-gradient(135deg, #22c55e, #16a34a);
-    color: white;
-    border: none;
-    padding: 14px 22px;
-    font-size: 16px;
-    border-radius: 10px;
-    cursor: pointer;
-    width: 100%;
-    font-family: inherit;
-    transition: transform 0.1s ease;
-  }
-  button:hover { transform: translateY(-1px); }
-  button:disabled { opacity: 0.6; cursor: default; }
-  #result {
-    margin-top: 14px;
-    font-size: 13px;
-    white-space: pre-wrap;
-    word-break: break-word;
-    background: #0f172a;
-    border-radius: 8px;
-    padding: 10px;
-    display: none;
-  }
+  button { background: linear-gradient(135deg, #22c55e, #16a34a); color: white; border: none; padding: 14px 22px; font-size: 16px; border-radius: 10px; cursor: pointer; width: 100%; font-family: inherit; }
+  #result { margin-top: 14px; font-size: 13px; white-space: pre-wrap; word-break: break-word; background: #0f172a; border-radius: 8px; padding: 10px; display: none; }
   ul { list-style: none; padding: 0; margin: 0; }
-  li {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 8px 0;
-    border-bottom: 1px solid #334155;
-    font-size: 14px;
-  }
+  li { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid #334155; font-size: 14px; }
   li:last-child { border-bottom: none; }
   .name { color: #e2e8f0; }
-  code {
-    color: #94a3b8;
-    font-size: 11px;
-    direction: ltr;
-    text-align: left;
-  }
+  code { color: #94a3b8; font-size: 11px; direction: ltr; text-align: left; }
   .status { color: #22c55e; font-size: 14px; margin-bottom: 16px; }
 </style>
 </head>
 <body>
-
 <div class="card">
   <div class="status">🟢 ربات فعاله</div>
   <h1>فعال‌سازی Webhook</h1>
   <button id="btn" onclick="setupWebhook()">فعال‌سازی Webhook</button>
   <div id="result"></div>
 </div>
-
 <div class="card">
   <h2>🤖 مدل‌های متنی فعال</h2>
   <ul>${modelRows}</ul>
 </div>
-
 <div class="card">
   <h2>🖼️ مدل‌های ساخت تصویر فعال</h2>
   <ul>
@@ -184,7 +112,6 @@ function renderStatusPage() {
     <li><span class="name">✨ کیفیت بالا (/imagehd)</span><code>${IMAGE_MODEL_HQ}</code></li>
   </ul>
 </div>
-
 <script>
 async function setupWebhook() {
   const btn = document.getElementById('btn');
@@ -205,7 +132,6 @@ async function setupWebhook() {
   btn.disabled = false;
 }
 </script>
-
 </body>
 </html>`;
 }
@@ -224,54 +150,89 @@ async function handleUpdate(update, env) {
 
 async function handleMessage(message, env) {
   const chatId = message.chat.id;
+  const chatType = message.chat.type;
   const text = (message.text || '').trim();
 
-  if (text === '/start') {
-    await sendMessage(chatId, 'سلام 👋 من یه ربات هوش مصنوعیم که روی Cloudflare Workers AI اجرا میشم.\nبرای انتخاب مدل از /model استفاده کن و سوالت رو بپرس.\nبرای ساخت تصویر سریع: /image توضیح تصویر\nبرای ساخت تصویر باکیفیت‌تر (کندتر): /imagehd توضیح تصویر', env);
-    await sendModelPicker(chatId, env);
-    return;
-  }
+  // اگه پیام متنی نیست، ساکت بمون (هیچی نفرست)
+  if (!text) return;
 
-  if (text === '/model') {
-    await sendModelPicker(chatId, env);
-    return;
-  }
+  // دستورات همیشه جواب می‌گیرن
+  const isCommand = text.startsWith('/');
 
-  if (text === '/reset') {
-    await env.KV.delete(`history:${chatId}`);
-    await sendMessage(chatId, '✅ حافظه مکالمه پاک شد.', env);
-    return;
-  }
-
-  if (text === '/image' || text.startsWith('/image ')) {
-    const prompt = text.slice('/image'.length).trim();
-    if (!prompt) {
-      await sendMessage(chatId, 'بعد از دستور /image توضیح تصویر رو بنویس.\nمثال: /image یک گربه فضانورد روی ماه\n\nبرای کیفیت بالاتر (کندتر) از /imagehd استفاده کن.', env);
+  if (isCommand) {
+    if (text === '/start') {
+      await sendMessage(chatId, 'سلام 👋 من «باهم کتاب» هستم، دستیار گروه امانت کتاب.\nبرای انتخاب مدل از /model استفاده کن.\nبرای ساخت تصویر: /image توضیح تصویر', env, message.message_id);
+      await sendModelPicker(chatId, env);
       return;
     }
-    await sendChatAction(chatId, env, 'upload_photo');
-    await replyWithImage(chatId, prompt, IMAGE_MODEL_FAST, env);
-    return;
-  }
 
-  if (text === '/imagehd' || text.startsWith('/imagehd ')) {
-    const prompt = text.slice('/imagehd'.length).trim();
-    if (!prompt) {
-      await sendMessage(chatId, 'بعد از دستور /imagehd توضیح تصویر رو بنویس.\nمثال: /imagehd یک منظره کوهستانی در غروب\n(این مدل باکیفیت‌تر ولی کندتره)', env);
+    if (text === '/model') {
+      await sendModelPicker(chatId, env);
       return;
     }
-    await sendChatAction(chatId, env, 'upload_photo');
-    await replyWithImage(chatId, prompt, IMAGE_MODEL_HQ, env);
+
+    if (text === '/reset') {
+      await env.KV.delete(`history:${chatId}`);
+      await sendMessage(chatId, '✅ حافظه مکالمه پاک شد.', env, message.message_id);
+      return;
+    }
+
+    if (text === '/image' || text.startsWith('/image ')) {
+      const prompt = text.slice('/image'.length).trim();
+      if (!prompt) {
+        await sendMessage(chatId, 'بعد از دستور /image توضیح تصویر رو بنویس.\nمثال: /image یک گربه فضانورد روی ماه', env, message.message_id);
+        return;
+      }
+      await sendChatAction(chatId, env, 'upload_photo');
+      await replyWithImage(chatId, prompt, IMAGE_MODEL_FAST, env);
+      return;
+    }
+
+    if (text === '/imagehd' || text.startsWith('/imagehd ')) {
+      const prompt = text.slice('/imagehd'.length).trim();
+      if (!prompt) {
+        await sendMessage(chatId, 'بعد از دستور /imagehd توضیح تصویر رو بنویس.\nمثال: /imagehd یک منظره کوهستانی در غروب', env, message.message_id);
+        return;
+      }
+      await sendChatAction(chatId, env, 'upload_photo');
+      await replyWithImage(chatId, prompt, IMAGE_MODEL_HQ, env);
+      return;
+    }
+
+    // دستور ناشناخته
     return;
   }
 
-  if (!text) {
-    
-    return;
+  // ---------- تصمیم‌گیری: ربات جواب بده یا نه؟ ----------
+  let shouldRespond = false;
+
+  if (chatType === 'private') {
+    // توی چت خصوصی همیشه جواب بده
+    shouldRespond = true;
+  } else {
+    // توی گروه/سوپرگروه: فقط اگه منشن شده یا ریپلای به ربات باشه
+
+    // چک ۱: ریپلای به پیام ربات؟
+    const repliedTo = message.reply_to_message;
+    if (repliedTo && repliedTo.from && repliedTo.from.is_bot) {
+      shouldRespond = true;
+    }
+
+    // چک ۲: منشن ربات توی متن؟
+    const botUsername = env.BOT_USERNAME || '';
+    if (botUsername && text.includes('@' + botUsername)) {
+      shouldRespond = true;
+    }
   }
+
+  if (!shouldRespond) return;
+
+  // متن رو از منشن پاک کن (که به AI نره)
+  const botUsername = env.BOT_USERNAME || '';
+  const cleanText = botUsername ? text.replace('@' + botUsername, '').trim() : text;
 
   await sendChatAction(chatId, env);
-  await replyWithAI(chatId, text, env);
+  await replyWithAI(chatId, cleanText, env, message.message_id);
 }
 
 async function handleCallback(cb, env) {
@@ -292,17 +253,19 @@ async function handleCallback(cb, env) {
 // ------------------------------------------------------------
 // فراخوانی Workers AI و مدیریت تاریخچه مکالمه
 // ------------------------------------------------------------
-async function replyWithAI(chatId, text, env) {
+async function replyWithAI(chatId, text, env, replyToMessageId) {
   const modelId = (await env.KV.get(`model:${chatId}`)) || DEFAULT_MODEL_ID;
   const modelDef = MODELS.find((m) => m.id === modelId) || MODELS.find((m) => m.id === DEFAULT_MODEL_ID);
 
   const history = await getHistory(chatId, env);
   history.push({ role: 'user', content: text });
 
+  const systemPrompt = 'اسم تو «باهم کتاب» هست. باید به زبان محاوره‌ای و محترمانه و با استفاده مناسب و بامزه از ایموجی‌ها و صمیمی جواب بدی. تو یکی از ادمین‌های گروه امانت دوست‌داشتنی هستی و باید به اعضا کمک کنی کتاب امانت بدن یا کتاب امانت بگیرن. و به این کار هم تشویقشون کنی و انگیزه بدی. اگه کتابی رو نمی‌شناسی نباید به هیچ وجه دربارش توضیح بدی و از خودت نباید چیزی بگی.';
+
   try {
     const result = await env.AI.run(modelDef.model, {
       messages: [
-        { role: 'system', content: 'اسم تو «باهم کتاب» هست . باید به زبان محاوره ای و محترمانه و استفاده مناسب و بامزه از ایموجی ها و صمیمی جواب بدی.. تو یکی از ادمین های گروه امانت دوست داشتنی هستی و باید به اعضا کمک کنی کتاب امانت بدن یا کتاب امانت بگیرن. و به این کار هم تشویقشون کنی و انگیزه بدی. اگه کتابی رو نمیشناسی نباید به هیچ وجه دربارش توضیح بدی از خودت نباید چیزی بگی. ' },
+        { role: 'system', content: systemPrompt },
         ...history,
       ],
       max_tokens: 1536,
@@ -312,24 +275,19 @@ async function replyWithAI(chatId, text, env) {
 
     if (!reply) {
       console.error('Empty/unrecognized AI response shape:', JSON.stringify(result).slice(0, 500));
-      await sendMessage(chatId, `⚠️ مدل ${modelDef.name} پاسخ قابل‌فهمی برنگردوند. با /model یه مدل دیگه رو امتحان کن.`, env);
+      await sendMessage(chatId, `⚠️ پاسخی دریافت نشد. با /model یه مدل دیگه رو امتحان کن.`, env, replyToMessageId);
       return;
     }
 
     history.push({ role: 'assistant', content: reply });
     await saveHistory(chatId, history, env);
-    await await sendMessage(chatId, reply, env);
+    await sendMessage(chatId, reply, env, replyToMessageId);
   } catch (err) {
     console.error('AI run error:', err && err.message ? err.message : String(err));
-    await sendMessage(chatId, '⚠️ خطا در دریافت پاسخ از مدل. چند لحظه دیگه دوباره امتحان کن یا با /model مدل رو عوض کن.', env);
+    await sendMessage(chatId, '⚠️ خطا در دریافت پاسخ. چند لحظه دیگه دوباره امتحان کن.', env, replyToMessageId);
   }
 }
 
-// استخراج متن پاسخ از سه فرمت متفاوتی که Workers AI ممکنه برگردونه:
-//  ۱) فرمت کلاسیک chat-completion:            { response: "متن پاسخ" }
-//  ۲) فرمت OpenAI Chat Completions (GPT-OSS، GLM، DeepSeek):
-//        { choices: [ { message: { content: "متن پاسخ", reasoning_content: "زنجیره فکر" } } ] }
-//  ۳) فرمت Responses API:                     { output: [ { type: "message", content: [ { type: "output_text", text: "..." } ] }, ... ] }
 function extractText(result) {
   if (!result) return null;
 
@@ -362,8 +320,6 @@ function extractText(result) {
   return null;
 }
 
-// مدل‌های استدلالی (مثل DeepSeek R1) گاهی زنجیره فکر خودشون رو
-// داخل تگ <think>...</think> برمی‌گردونن؛ اینو قبل از ارسال به کاربر حذف می‌کنیم.
 function stripThinking(text) {
   return text.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
 }
@@ -424,14 +380,11 @@ async function replyWithImage(chatId, prompt, model, env) {
 
     let bytes = null;
 
-    // فرمت Flux: { image: "base64رشته" }
     if (result && typeof result.image === 'string') {
       const binary = atob(result.image);
       bytes = new Uint8Array(binary.length);
       for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-    }
-    // فرمت مدل‌های Stable Diffusion: بایت خام تصویر (Response/ReadableStream)
-    else if (result) {
+    } else if (result) {
       const buf = await new Response(result).arrayBuffer();
       if (buf && buf.byteLength) bytes = new Uint8Array(buf);
     }
@@ -444,7 +397,7 @@ async function replyWithImage(chatId, prompt, model, env) {
     await sendPhoto(chatId, bytes, prompt, env);
   } catch (err) {
     console.error('Image gen error:', err && err.message ? err.message : String(err));
-    await sendMessage(chatId, '⚠️ خطا در ساخت تصویر. دوباره امتحان کن (یا مدل دیگه‌ای رو امتحان کن).', env);
+    await sendMessage(chatId, '⚠️ خطا در ساخت تصویر. دوباره امتحان کن.', env);
   }
 }
 
