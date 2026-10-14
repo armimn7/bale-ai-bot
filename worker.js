@@ -1,6 +1,6 @@
 // ============================================================
 // ربات هوش مصنوعی بله (Bale) — Cloudflare Worker
-// نسخه ۶: رفتار انسانی‌تر + اتصال متقاضی و صاحب کتاب
+// نسخه ۷: تاریخچه کامل + پاسخ فقط به آخرین پیام
 // ============================================================
 
 const MODELS = [
@@ -17,7 +17,9 @@ const FALLBACK_ORDER = ['gemma', 'llama', 'qwen', 'gpt120', 'deepseek', 'glm'];
 const IMAGE_MODEL_FAST = '@cf/black-forest-labs/flux-1-schnell';
 const IMAGE_MODEL_HQ   = '@cf/stabilityai/stable-diffusion-xl-base-1.0';
 const DEFAULT_MODEL_ID = 'gemma';
-const MAX_HISTORY = 16;
+
+// تعداد پیام‌هایی که توی تاریخچه نگه داشته می‌شن (۲۰ = ۱۰ رفت‌وبرگشت)
+const MAX_HISTORY = 20;
 const HISTORY_TTL = 60 * 60 * 24 * 7;
 
 const NO_REPLY_MARKER = '__NO_REPLY__';
@@ -134,7 +136,16 @@ ble.ir/join/FuGWc5CdFW
 
 function buildSystemPrompt(isGroup) {
   if (isGroup) {
-    return BASE_PROMPT + `\n\nقانون مهم برای سکوت و حذف:
+    return BASE_PROMPT + `\n\n⚠️ قانون مهم درباره کدام پیام را باید پاسخ دهی:
+تو تاریخچه پیام‌های قبلی گروه رو داری (با اسم فرستنده). این پیام‌ها فقط برای درک موقعیت هستن.
+فقط و فقط به «آخرین پیام» توی تاریخچه جواب بده. به پیام‌های قبلی به هیچ‌وجه جواب نده، حتی اگه سوال بی‌جواب داشته باشن.
+پیام‌های قبلی فقط برای اینن که بدونی:
+- الان توی گروه چه خبره؟
+- کی با کیه؟
+- اگه یکی داره به پیام قبلی یه نفر دیگه واکنش نشون می‌ده، بفهمی چی بوده.
+پس هنگام نوشتن جواب، فقط پیام آخر رو در نظر بگیر و به بقیه کاری نداشته باش.
+
+قانون مهم برای سکوت و حذف:
 تو توی گروهی و همه پیام‌ها رو می‌خونی (با اسم فرستنده). ولی همیشه نباید جواب بدی.
 قبل از پاسخ، خوب فکر کن به عنوان یک ادمین حرفه‌ای. لزومی نداره به هر پیامی جواب بدی. باید سیاست داشته باشی که ما رو به هدف اصلی 
 یعنی فعال شدن گروه ببره نه چیز دیگه ای  و زیاده روی هم به این هدف لطمه میزنه:
@@ -459,6 +470,7 @@ async function replyWithAI(chatId, text, env, replyToMessageId, isGroup, senderN
 
   const history = await getHistory(chatId, env);
 
+  // پیام کاربر با اسمش ذخیره می‌شه تا AI بدونه کی چی گفته
   const userContent = isGroup ? `${senderName}: ${text}` : text;
   history.push({ role: 'user', content: userContent });
 
@@ -473,6 +485,7 @@ async function replyWithAI(chatId, text, env, replyToMessageId, isGroup, senderN
     if (isGroup) {
       const trimmed = reply.trim();
 
+      // حذف پیام + ریپلای تذکر
       if (trimmed.includes(DELETE_MARKER)) {
         const warningText = trimmed.replace(DELETE_MARKER, '').trim();
         if (warningText) {
@@ -484,10 +497,11 @@ async function replyWithAI(chatId, text, env, replyToMessageId, isGroup, senderN
         return;
       }
 
+      // سکوت
       if (trimmed === NO_REPLY_MARKER || trimmed.includes(NO_REPLY_MARKER)) {
         const cleaned = trimmed.replace(NO_REPLY_MARKER, '').trim();
         if (!cleaned) {
-          history.pop();
+          // پیام کاربر توی گروه موند، پس توی تاریخچه ذخیره می‌شه (برای دفعه بعد)
           await saveHistory(chatId, history, env);
           return;
         }
