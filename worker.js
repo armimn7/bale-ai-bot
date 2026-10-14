@@ -84,7 +84,7 @@ function getIranTimestamp(unixSeconds) {
 
 const BASE_PROMPT = `اسم تو ربات «باهم کتاب» هست. تو عضو تیم امانت دوست داشتنی هستی و یکی از مدیریت کننده های خوب گروه امانت دوست داشتنی.باید به زبان محاوره‌ای و محترمانه و با استفاده مناسب و بامزه از ایموجی‌ها و خیلی صمیمی ولی محترمانه جواب بدی 
 از افعال جمع هم تا جای امکان استفاده کن که احترام حفظ بشه ولی صمیمی و دوست داشتنی باش.
-از خطاب هایی مثل علی عزیز یا زهرا جان و... پرهیز کن تا جای ممکن که یه وقت برای کسی سوء تفاهم پیش نیاد. به هیچ وجه به اسم خطابشون نکن. خیلی مهمه
+از خطاب هایی مثل علی عزیز یا زهرا جان و... پرهیز کن تا جای ممکن که یه وقت برای کسی سوء تفاهم پیش نیاد. ولی صمیمی باش
 ضمن اینکه اصلا خیلی از اوقات بعضی کاربر ها اسمشون اصلا مشخص نمیکنه چیه حتی جنسیتشون رو هم مشخص نمیکنه
 تو یکی از ادمین‌های گروه امانت دوست‌داشتنی هستی باید مثل یه ادمین حرفه ای باشی و اصولی جواب بدی و باید به اعضا کمک کنی کتاب امانت بدن یا کتاب امانت بگیرن.
 و به این کار هم تشویقشون کنی و انگیزه بدی.
@@ -874,4 +874,111 @@ async function saveHistory(chatId, history, env) {
 
 async function pushToHistory(chatId, role, content, env) {
   const history = await getHistory(chatId, env);
- 
+  history.push({ role, content });
+  await saveHistory(chatId, history, env);
+}
+
+async function sendMessage(chatId, text, env, replyToMessageId = null) {
+  const body = { chat_id: chatId, text };
+  if (replyToMessageId) body.reply_to_message_id = replyToMessageId;
+  try {
+    const res = await fetch(`${baleApi(env.BALE_BOT_TOKEN)}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    return data && data.result ? data.result.message_id : null;
+  } catch (err) {
+    console.error('sendMessage error:', err);
+    return null;
+  }
+}
+
+async function editMessageText(chatId, messageId, newText, env) {
+  try {
+    const res = await fetch(`${baleApi(env.BALE_BOT_TOKEN)}/editMessageText`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: chatId, message_id: messageId, text: newText }),
+    });
+    if (!res.ok) console.error('editMessageText failed:', res.status, await res.text());
+  } catch (err) {
+    console.error('editMessageText error:', err && err.message ? err.message : String(err));
+  }
+}
+
+async function deleteMessage(chatId, messageId, env) {
+  try {
+    const res = await fetch(`${baleApi(env.BALE_BOT_TOKEN)}/deleteMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: chatId, message_id: messageId }),
+    });
+    if (!res.ok) console.error('deleteMessage failed:', res.status, await res.text());
+  } catch (err) {
+    console.error('deleteMessage error:', err && err.message ? err.message : String(err));
+  }
+}
+
+async function sendChatAction(chatId, env, action = 'typing') {
+  await fetch(`${baleApi(env.BALE_BOT_TOKEN)}/sendChatAction`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ chat_id: chatId, action }),
+  });
+}
+
+async function sendPhoto(chatId, imageBytes, caption, env) {
+  const form = new FormData();
+  form.append('chat_id', String(chatId));
+  if (caption) form.append('caption', caption.slice(0, 1000));
+  form.append('photo', new Blob([imageBytes], { type: 'image/jpeg' }), 'image.jpg');
+  await fetch(`${baleApi(env.BALE_BOT_TOKEN)}/sendPhoto`, { method: 'POST', body: form });
+}
+
+async function replyWithImage(chatId, prompt, model, env) {
+  try {
+    const result = await env.AI.run(model, { prompt, seed: Math.floor(Math.random() * 1000000) });
+    let bytes = null;
+    if (result && typeof result.image === 'string') {
+      const binary = atob(result.image);
+      bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    } else if (result) {
+      const buf = await new Response(result).arrayBuffer();
+      if (buf && buf.byteLength) bytes = new Uint8Array(buf);
+    }
+    if (!bytes || !bytes.length) {
+      await sendMessage(chatId, '⚠️ ساخت تصویر جواب قابل‌فهمی برنگردوند.', env);
+      return;
+    }
+    await sendPhoto(chatId, bytes, prompt, env);
+  } catch (err) {
+    console.error('Image gen error:', err && err.message ? err.message : String(err));
+    await sendMessage(chatId, '⚠️ خطا در ساخت تصویر.', env);
+  }
+}
+
+async function answerCallback(callbackId, env, text) {
+  await fetch(`${baleApi(env.BALE_BOT_TOKEN)}/answerCallbackQuery`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ callback_query_id: callbackId, text }),
+  });
+}
+
+async function sendModelPicker(chatId, env) {
+  const keyboard = {
+    inline_keyboard: MODELS.map((m) => [{ text: m.name, callback_data: `model:${m.id}` }]),
+  };
+  await fetch(`${baleApi(env.BALE_BOT_TOKEN)}/sendMessage`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      chat_id: chatId,
+      text: 'یکی از مدل‌ها رو انتخاب کن:',
+      reply_markup: keyboard,
+    }),
+  });
+}
