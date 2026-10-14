@@ -1,6 +1,6 @@
 // ============================================================
 // ربات هوش مصنوعی بله (Bale) — Cloudflare Worker
-// نسخه ۱۴: صف کانتکست + پرامپت مخصوص /reply
+// نسخه ۱۵: /reply انعطاف‌پذیر (با آیدی یا ریپلای)
 // ============================================================
 
 const MODELS = [
@@ -192,30 +192,29 @@ ble.ir/join/FuGWc5CdFW
 ⚠️ تو توی پاسخ‌هات هرگز نباید این پیشوند تاریخ/ساعت یا اسم خودت («باهم کتاب:») رو بنویسی. فقط و فقط متن خالص جواب رو بنویس.`;
 
 // ============================================================
-// پرامپت مخصوص /reply — فقط قوانین ادمین برای جواب هدفمند
-// (این قوانین هم مستقیماً از حرف‌های خودت گرفته شده)
+// پرامپت مخصوص /reply
 // ============================================================
-const REPLY_SYSTEM_PROMPT = `تو «باهم کتاب» هستی، یکی از ادمین‌های گروه «امانت دوست داشتنی».
+const REPLY_SYSTEM_PROMPT = `تو «باهم کتاب» هستی، یکی از ادمین‌های گروه «امانت دوست داشتنی» — گروهی صمیمی برای امانت و تبادل کتاب.
 
-⚠️ قوانین مطلق (اینها رو تحت هیچ شرایطی نقض نکن):
+⚠️ قوانین مهم (اینها رو رعایت کن):
 
-۱) همیشه از افعال جمع استفاده کن: «بگیرید»، «بدید»، «بفرمایید»، «ممنونم»، «بتونید»، نه «بگیر»، «بده»،  «بتونی». ولی صمیمی باش کاملا . دوست داشتنی  باش
-از ایموجی درست استفاده کن تا صمیمیت ایجاد کنه. ولی فعل هات جمع (مودبانه) باشن.
+۱) همیشه از افعال جمع استفاده کن: «بگیرید»، «بدید»، «بفرمایید»، «بتونید»، «می‌تونید»، «دارید». هرگز فعل مفرد به کار نبر. این برای احترامه، ولی لحنت همچنان صمیمی و دوستانه بمونه.
 
-۲) هرگز اسم طرف رو صدا نزن. نه «محمود جان»، نه «محمود عزیز»، نه هیچ اسم دیگه‌ای. خطاب مستقیم با اسم ممنوعه.
+۲) اسم طرف رو صدا نزن. نه «محمود جان»، نه «محمود عزیز»، نه هیچ اسم دیگه. ممکنه بعضی‌ها ناراحت بشن یا سوءتفاهم پیش بیاد.
 
+۳) اغراق نکن. از «وای عالیه!»، «فوق‌العاده!»، «بی‌نظیرید!»، «چه عالی!» و کلیشه‌ها پرهیز کن. تشکر یا تشویق ساده و صمیمی کافیه.
 
-۴) جواب کوتاه: ۱ تا ۳ خط، نه بیشتر. زیاده‌گویی نکن.
+۴) جواب کوتاه و مفید: ۱ تا ۳ خط. زیاده‌گویی نکن.
 
+۵) ایموجی به‌اندازه و به‌جا استفاده کن. خودت بسنج. اگه پیام صمیمی و دوستانه‌ست، چند تا ایموجی مناسب بذار. اگه جدی‌ست کمتر. مثل یه آدم واقعی که توی گروه چت می‌کنه — نه خسیس، نه افراطی.
 
+۶) فقط به «[پیام هدف]» جواب بده. به پیام‌های کانتکست کاری نداشته باش.
 
-۶) دقیقاً به پیام بخش «[پیام هدف]» جواب بده — نه به پیام‌های کانتکست، نه به چیز دیگه‌ای.
+۷) اگه «[دستور ادمین]» داده شده، اون رو دقیقاً و بدون کم و کاست اجرا کن. دستور ادمین بالاتر از هر چیزه.
 
-۷) اگه «[دستور ادمین]» داده شده، اون رو دقیقاً و بدون کم و کاست اجرا کن. دستور ادمین بالاتر از هر چیز دیگه‌ایه.
+۸) لحن: صمیمی، دوستانه، محترمانه، محاوره‌ای، تشویق‌کننده به کتاب و امانت. مثل یک ادمین انسانی که توی گروه چت می‌کنه، نه یه ربات رسمی.
 
-۸) لحن: صمیمی، محترمانه، محاوره‌ای، تشویق‌کننده به کتاب و امانت، بدون لوس‌بازی و بدون کلیشه.
-
-حالا پیام و دستور رو بخون و فقط متن خالص جواب رو بنویس (بدون مقدمه، بدون توضیح اضافه، بدون تکرار اسم ادمین).`;
+حالا پیام و دستور رو بخون و فقط متن خالص جواب رو بنویس (بدون مقدمه، بدون توضیح اضافه).`;
 
 function buildSystemPrompt(isGroup) {
   if (isGroup) {
@@ -415,6 +414,40 @@ async function getAndClearContextQueue(chatId, env) {
   }
 }
 
+// ============================================================
+// پارس کردن آرگومان‌های /reply
+// پشتیبانی از دو فرمت:
+//   /reply <chat_id> <message_id> <متن راهنما>   ← با آیدی صریح
+//   /reply <متن راهنما>                            ← با ریپلای (فقط توی گروه)
+// ============================================================
+function parseReplyArgs(text, isGroup, message) {
+  const rest = text.replace(/^\/reply\s*/i, '').replace(/^\n+/, '').trim();
+
+  // چک اگه با chat_id و message_id شروع می‌شه
+  const match = rest.match(/^(-?\d+)\s+(\d+)(?:\s+([\s\S]*))?$/);
+
+  if (match) {
+    return {
+      chatId: Number(match[1]),
+      messageId: Number(match[2]),
+      instruction: (match[3] || '').trim(),
+      fromReply: false,
+    };
+  }
+
+  // اگه توی گروه و ریپلای داره
+  if (isGroup && message.reply_to_message) {
+    return {
+      chatId: message.chat.id,
+      messageId: message.reply_to_message.message_id,
+      instruction: rest,
+      fromReply: true,
+    };
+  }
+
+  return null;
+}
+
 async function handleMessage(message, env) {
   const chatId = message.chat.id;
   const chatType = message.chat.type;
@@ -446,7 +479,7 @@ async function handleMessage(message, env) {
   }
 
   if (text === '/start' && !isGroup) {
-    await sendMessage(chatId, 'سلام 👋 من «باهم کتاب» هستم، دستیار گروه امانت کتاب.\n\n📌 دستورات ادمین:\n\n🔹 /myid — آیدی عددی\n🔹 /infoid — توی گروه، با ریپلای روی هر پیام\n🔹 /reply <chat_id> <msg_id> [راهنما] — ریپلای هوشمند\n🔹 /edit <chat_id> <msg_id> <متن> — ویرایش پیام ربات\n🔹 /model — تغییر مدل AI\n🔹 /reset — تأیید\n🔹 /clear <chat_id> — پاک کردن حافظه گروه', env, message.message_id);
+    await sendMessage(chatId, 'سلام 👋 من «باهم کتاب» هستم، دستیار گروه امانت کتاب.\n\n📌 دستورات ادمین:\n\n🔹 /myid — آیدی عددی\n🔹 /infoid — توی گروه، با ریپلای روی هر پیام\n🔹 /reply — توی گروه با ریپلای، یا توی چت خصوصی: /reply <chat_id> <msg_id> [راهنما]\n🔹 /edit — ویرایش پیام ربات\n🔹 /model — تغییر مدل AI\n🔹 /reset — تأیید\n🔹 /clear <chat_id> — پاک کردن حافظه گروه', env, message.message_id);
     return;
   }
 
@@ -583,55 +616,66 @@ async function handleMessage(message, env) {
     return;
   }
 
+  // ---------- /reply ----------
   if (text === '/reply' || text.startsWith('/reply ') || text.startsWith('/reply\n')) {
-    if (!isGroup) {
-      const rest = text.replace(/^\/reply\s*/i, '').trim();
-      const parts = rest.split(/\s+/);
-      if (parts.length < 2) {
-        await sendMessage(chatId, 'فرمت: `/reply <chat_id> <message_id> [راهنما]`', env, message.message_id);
-        return;
+    const ok = await checkIsAdmin(chatId, senderId, env);
+    if (!ok) return;
+
+    const parsed = parseReplyArgs(text, isGroup, message);
+
+    if (!parsed) {
+      if (!isGroup) {
+        await sendMessage(chatId, 'فرمت: `/reply <chat_id> <message_id> [راهنما]`\nیا توی گروه روی یه پیام ریپلای بزن و بنویس `/reply [راهنما]`', env, message.message_id);
+      } else {
+        await deleteMessage(chatId, message.message_id, env);
+        await sendMessage(senderId, '⚠️ برای /reply باید روی یه پیام ریپلای بزنی، یا با فرمت `/reply <chat_id> <msg_id> [راهنما]` بنویسی.', env);
       }
-      const targetChatId = Number(parts[0]);
-      const targetMessageId = Number(parts[1]);
-      const instruction = parts.slice(2).join(' ').trim();
-
-      const ok = await checkIsAdmin(targetChatId, senderId, env);
-      if (!ok) {
-        await sendMessage(chatId, '⚠️ شما ادمین آن گروه نیستید.', env, message.message_id);
-        return;
-      }
-
-      const target = await getStoredMessage(targetChatId, targetMessageId, env);
-      if (!target) {
-        await sendMessage(chatId, '⚠️ پیام پیدا نشد.\n\n💡 توی گروه روی همون پیام ریپلای بزن و /infoid بفرست تا ذخیره بشه.', env, message.message_id);
-        return;
-      }
-
-      const contextQueue = await getAndClearContextQueue(targetChatId, env);
-
-      await generateReplyToMessage(targetChatId, targetMessageId, target.sender, target.text, target.date, instruction, contextQueue, env);
-      await sendMessage(chatId, `✅ جواب به پیام \`${targetMessageId}\` فرستاده شد.\n📚 از ${contextQueue.length} پیام کانتکست استفاده شد.`, env, message.message_id);
       return;
     }
 
-    const ok = await checkIsAdmin(chatId, senderId, env);
-    await deleteMessage(chatId, message.message_id, env);
-    if (!ok) return;
+    // حذف پیام ادمین از گروه
+    if (isGroup) {
+      await deleteMessage(chatId, message.message_id, env);
+    }
 
-    const originalMsg = message.reply_to_message;
-    if (!originalMsg) return;
+    // پیدا کردن پیام هدف
+    let targetData;
+    if (parsed.fromReply && message.reply_to_message) {
+      const om = message.reply_to_message;
+      targetData = {
+        sender: getSenderName(om),
+        text: (om.text || om.caption || '').trim(),
+        date: om.date || Math.floor(Date.now() / 1000),
+      };
+    } else {
+      targetData = await getStoredMessage(parsed.chatId, parsed.messageId, env);
+    }
 
-    const originalText = (originalMsg.text || originalMsg.caption || '').trim();
-    if (!originalText) return;
+    if (!targetData || !targetData.text) {
+      if (!isGroup) {
+        await sendMessage(chatId, '⚠️ پیام پیدا نشد.\n\n💡 توی گروه روی همون پیام ریپلای بزن و /infoid بفرست تا ذخیره بشه.', env, message.message_id);
+      } else {
+        await sendMessage(senderId, '⚠️ پیام پیدا نشد. اول /infoid بزن.', env);
+      }
+      return;
+    }
 
-    const originalSender = getSenderName(originalMsg);
-    const originalId = originalMsg.message_id;
-    const originalDate = originalMsg.date || Math.floor(Date.now() / 1000);
-    const instruction = text.replace(/^\/reply\s*/i, '').replace(/\n/g, ' ').trim();
+    const contextQueue = await getAndClearContextQueue(parsed.chatId, env);
 
-    const contextQueue = await getAndClearContextQueue(chatId, env);
+    await generateReplyToMessage(
+      parsed.chatId,
+      parsed.messageId,
+      targetData.sender,
+      targetData.text,
+      targetData.date,
+      parsed.instruction,
+      contextQueue,
+      env
+    );
 
-    await generateReplyToMessage(chatId, originalId, originalSender, originalText, originalDate, instruction, contextQueue, env);
+    if (!isGroup) {
+      await sendMessage(chatId, `✅ جواب به پیام \`${parsed.messageId}\` فرستاده شد.`, env, message.message_id);
+    }
     return;
   }
 
@@ -704,7 +748,7 @@ async function getStoredMessage(chatId, messageId, env) {
 }
 
 // ============================================================
-// /reply — از REPLY_SYSTEM_PROMPT استفاده می‌کنه (نه BASE_PROMPT)
+// /reply — از REPLY_SYSTEM_PROMPT استفاده می‌کنه
 // ============================================================
 async function generateReplyToMessage(chatId, originalId, originalSender, originalText, originalDate, instruction, contextQueue, env) {
   const modelId = (await env.KV.get(`model:${chatId}`)) || DEFAULT_MODEL_ID;
@@ -733,7 +777,7 @@ async function generateReplyToMessage(chatId, originalId, originalSender, origin
     userMessage += `[دستور ادمین — دقیقاً این رو اجرا کن]\n${instruction}\n\n`;
   }
 
-  userMessage += `حالا فقط و فقط متن خالص جواب به «پیام هدف» رو بنویس. بدون اسم بردن، با افعال جمع، بدون اغراق.`;
+  userMessage += `حالا فقط و فقط متن خالص جواب به «پیام هدف» رو بنویس.`;
 
   try {
     const { reply } = await runAIWithFallback(env, modelId, [
