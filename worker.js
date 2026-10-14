@@ -1,6 +1,6 @@
 // ============================================================
 // ربات هوش مصنوعی بله (Bale) — Cloudflare Worker
-// نسخه ۷: تاریخچه کامل + پاسخ فقط به آخرین پیام
+// نسخه ۸: تاریخچه با تاریخ و ساعت شمسی
 // ============================================================
 
 const MODELS = [
@@ -18,7 +18,6 @@ const IMAGE_MODEL_FAST = '@cf/black-forest-labs/flux-1-schnell';
 const IMAGE_MODEL_HQ   = '@cf/stabilityai/stable-diffusion-xl-base-1.0';
 const DEFAULT_MODEL_ID = 'gemma';
 
-// تعداد پیام‌هایی که توی تاریخچه نگه داشته می‌شن (۲۰ = ۱۰ رفت‌وبرگشت)
 const MAX_HISTORY = 20;
 const HISTORY_TTL = 60 * 60 * 24 * 7;
 
@@ -27,6 +26,51 @@ const DELETE_MARKER   = '__DELETE__';
 
 function baleApi(token) {
   return `https://tapi.bale.ai/bot${token}`;
+}
+
+// ------------------------------------------------------------
+// تبدیل تاریخ میلادی به شمسی
+// ------------------------------------------------------------
+function gregorianToJalali(gy, gm, gd) {
+  const g_d_m = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
+  let jy = (gy <= 1600) ? 0 : 979;
+  gy -= (gy <= 1600) ? 621 : 1600;
+  const gy2 = (gm > 2) ? (gy + 1) : gy;
+  let days = (365 * gy) + Math.floor((gy2 + 3) / 4) - Math.floor((gy2 + 99) / 100) + Math.floor((gy2 + 399) / 400) - 80 + gd + g_d_m[gm - 1];
+  jy += 33 * Math.floor(days / 12053);
+  days %= 12053;
+  jy += 4 * Math.floor(days / 1461);
+  days %= 1461;
+  if (days > 365) {
+    jy += Math.floor((days - 1) / 365);
+    days = (days - 1) % 365;
+  }
+  const jm = (days < 186) ? 1 + Math.floor(days / 31) : 7 + Math.floor((days - 186) / 30);
+  const jd = 1 + ((days < 186) ? (days % 31) : ((days - 186) % 30));
+  return { jy, jm, jd };
+}
+
+// برمی‌گردونه: «پنجشنبه ۱۴۰۳/۰۷/۲۴ ساعت ۱۴:۳۰»
+function getIranTimestamp(unixSeconds) {
+  if (!unixSeconds) return '';
+
+  // ایران UTC+3:30 (از سال ۱۴۰۱ ساعت تابستانی حذف شده)
+  const iranMs = unixSeconds * 1000 + (3 * 60 + 30) * 60 * 1000;
+  const d = new Date(iranMs);
+
+  const gy = d.getUTCFullYear();
+  const gm = d.getUTCMonth() + 1;
+  const gd = d.getUTCDate();
+  const { jy, jm, jd } = gregorianToJalali(gy, gm, gd);
+
+  const h = String(d.getUTCHours()).padStart(2, '0');
+  const min = String(d.getUTCMinutes()).padStart(2, '0');
+
+  // getUTCDay(): 0 = یکشنبه، 1 = دوشنبه، ...، 6 = شنبه
+  const weekdays = ['یکشنبه', 'دوشنبه', 'سه‌شنبه', 'چهارشنبه', 'پنجشنبه', 'جمعه', 'شنبه'];
+  const weekday = weekdays[d.getUTCDay()];
+
+  return `${weekday} ${jy}/${String(jm).padStart(2, '0')}/${String(jd).padStart(2, '0')} ساعت ${h}:${min}`;
 }
 
 // ------------------------------------------------------------
@@ -44,7 +88,9 @@ const BASE_PROMPT = `اسم تو ربات «باهم کتاب» هست. تو ع�
 دقت داشته باش
 حواست باشه که از موضوع گروه و کانال «امانت دوست داشتنی» فقط و فقط کتابه . و نباید موضوع حاشیه ای تو گروه مطرح بشه و اگه شد باید تدکر داده بشه
 مثلا وقتی تبلیغات فرستادن یا مطالب نا مرتبط و... باید تذکر بدی که نباید این کار رو کنن . به صورت صمیمانه. دلیلش رو هم بگو
+.
 بگو بخاطر اینکه گروه کاربردی بمونه و شلوغ نشه
+همچنین یه سری چیزا رو باید بدونی اینکه مثلا اعضا کتاب رو تو شخصی (پیوی) با هم هماهنگ میکنن خودشون معمولا که چجوری از هم بگیرن
 همچنین قبلا پیام های تقریبا رسمی تو گروه و کانال گذاشتیم که بهت اطلاعات خوبی میده که بدونی اینجا کجاست ولی دقت کن اینا رسمی هستن یه ذره تو باید مثل یه انسان باشی ! دقیقا مثل یه ادمین انسان ، محاوره ای و صمیمی و طبیعی
 .:
 1:
@@ -132,12 +178,14 @@ ble.ir/join/FuGWc5CdFW
    - «متقاضی»: کسی که کتابی رو می‌خواد یا می‌پرسه «چطوری امانت بگیرم».
 ۶) وقتی یکی می‌گه «دارم» و یکی می‌پرسه «چطوری ازت امانت بگیرم» → اینا رو مستقیم به هم وصل کن. مثلا بنویس: «[اسم صاحب کتاب] جان، [اسم متقاضی] می‌خواد این کتاب رو ازتون بگیره. با هم هماهنگ کنید.» یا حتی شماره/راه ارتباطی رو اگه داری بگو.
 ۷) همیشه فقط یه توضیح کلی و آموزشی نده وقتی می‌تونی مستقیم به موقعیت جواب بدی. مثلا اگه کسی می‌پرسه «چطوری امانت بگیرم ازت؟» نگو «کافیه اسم کتاب رو بنویسید...». باید بگی «با [اسم صاحب کتاب] هماهنگ کنید» فقط وقتی نیاز به راهنمایی عمومی هست عمومی راهنمایی کن بادی بتونی اینا رو تمییز بدی..
-۸) مثل یه آدم واقعی که توی گروه چت می‌کنه تایپ کن. آدم واقعی توی هر پیام درس نمی‌ده، گاهی فقط یه جمله کوتاه می‌گه، گاهی سوال می‌پرسه، گاهی تشویق می‌کنه.`;
+۸) مثل یه آدم واقعی که توی گروه چت می‌کنه تایپ کن. آدم واقعی توی هر پیام درس نمی‌ده، گاهی فقط یه جمله کوتاه می‌گه، گاهی سوال می‌پرسه، گاهی تشویق می‌کنه.
+۹) توی تاریخچه پیام‌ها، هر پیام کاربر با پیشوندی مثل «[پنجشنبه ۱۴۰۳/۰۷/۲۴ ساعت ۱۴:۳۰]» شروع می‌شه که تاریخ و ساعت ارسال اونه. این پیشوندها فقط برای اطلاعات تو هستن تا بدونی الان چه موقع از روز و چه روزیه (صبح، شب، تعطیلات و...). 
+⚠️ تو توی پاسخ‌هات هرگز نباید این پیشوند تاریخ/ساعت یا اسم خودت («باهم کتاب:») رو بنویسی. فقط و فقط متن خالص جواب رو بنویس.`;
 
 function buildSystemPrompt(isGroup) {
   if (isGroup) {
     return BASE_PROMPT + `\n\n⚠️ قانون مهم درباره کدام پیام را باید پاسخ دهی:
-تو تاریخچه پیام‌های قبلی گروه رو داری (با اسم فرستنده). این پیام‌ها فقط برای درک موقعیت هستن.
+تو تاریخچه پیام‌های قبلی گروه رو داری (با اسم فرستنده و تاریخ و ساعت). این پیام‌ها فقط برای درک موقعیت هستن.
 فقط و فقط به «آخرین پیام» توی تاریخچه جواب بده. به پیام‌های قبلی به هیچ‌وجه جواب نده، حتی اگه سوال بی‌جواب داشته باشن.
 پیام‌های قبلی فقط برای اینن که بدونی:
 - الان توی گروه چه خبره؟
@@ -317,6 +365,7 @@ async function handleMessage(message, env) {
 
   const isGroup = (chatType === 'group' || chatType === 'supergroup');
   const senderName = getSenderName(message);
+  const messageDate = message.date || Math.floor(Date.now() / 1000);
 
   if (text === '/start') {
     await sendMessage(chatId, 'سلام 👋 من «باهم کتاب» هستم، دستیار گروه امانت کتاب.\nبرای انتخاب مدل از /model استفاده کن.\nبرای ساخت تصویر: /image توضیح تصویر', env, message.message_id);
@@ -358,8 +407,9 @@ async function handleMessage(message, env) {
     if (!originalText) return;
     const originalSender = getSenderName(originalMsg);
     const originalId = originalMsg.message_id;
+    const originalDate = originalMsg.date || Math.floor(Date.now() / 1000);
     const instruction = text.replace(/^\/reply\s*/i, '').replace(/\n/g, ' ').trim();
-    await generateReplyToMessage(chatId, originalId, originalSender, originalText, instruction, env);
+    await generateReplyToMessage(chatId, originalId, originalSender, originalText, originalDate, instruction, env);
     return;
   }
 
@@ -388,7 +438,7 @@ async function handleMessage(message, env) {
   if (text.startsWith('/')) return;
 
   await sendChatAction(chatId, env);
-  await replyWithAI(chatId, text, env, message.message_id, isGroup, senderName);
+  await replyWithAI(chatId, text, env, message.message_id, isGroup, senderName, messageDate);
 }
 
 async function handleCallback(cb, env) {
@@ -406,12 +456,15 @@ async function handleCallback(cb, env) {
   }
 }
 
-async function generateReplyToMessage(chatId, originalId, originalSender, originalText, instruction, env) {
+async function generateReplyToMessage(chatId, originalId, originalSender, originalText, originalDate, instruction, env) {
   const modelId = (await env.KV.get(`model:${chatId}`)) || DEFAULT_MODEL_ID;
+
+  const timestamp = getIranTimestamp(originalDate);
 
   const userMessage = `یک پیام توی گروه هست که یکی از اعضا نوشته. ادمین می‌خواد یه جواب مناسب به این پیام بدی.
 
 فرستنده پیام اصلی: «${originalSender}»
+زمان ارسال: ${timestamp}
 متن پیام اصلی: "${originalText}"
 
 راهنمای ادمین: ${instruction || 'یک جواب طبیعی، مفید و مناسب به این پیام بده.'}
@@ -465,13 +518,16 @@ async function runAIWithFallback(env, preferredModelId, messages, maxTokens = 15
   throw lastError || new Error('All models failed to respond');
 }
 
-async function replyWithAI(chatId, text, env, replyToMessageId, isGroup, senderName) {
+async function replyWithAI(chatId, text, env, replyToMessageId, isGroup, senderName, messageDate) {
   const modelId = (await env.KV.get(`model:${chatId}`)) || DEFAULT_MODEL_ID;
 
   const history = await getHistory(chatId, env);
 
-  // پیام کاربر با اسمش ذخیره می‌شه تا AI بدونه کی چی گفته
-  const userContent = isGroup ? `${senderName}: ${text}` : text;
+  // پیام کاربر با تاریخ/ساعت و اسمش ذخیره می‌شه
+  const timestamp = getIranTimestamp(messageDate);
+  const userContent = isGroup
+    ? `[${timestamp}] ${senderName}: ${text}`
+    : `[${timestamp}] ${text}`;
   history.push({ role: 'user', content: userContent });
 
   const systemPrompt = buildSystemPrompt(isGroup);
@@ -501,7 +557,6 @@ async function replyWithAI(chatId, text, env, replyToMessageId, isGroup, senderN
       if (trimmed === NO_REPLY_MARKER || trimmed.includes(NO_REPLY_MARKER)) {
         const cleaned = trimmed.replace(NO_REPLY_MARKER, '').trim();
         if (!cleaned) {
-          // پیام کاربر توی گروه موند، پس توی تاریخچه ذخیره می‌شه (برای دفعه بعد)
           await saveHistory(chatId, history, env);
           return;
         }
