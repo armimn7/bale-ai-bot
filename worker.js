@@ -1,6 +1,6 @@
 // ============================================================
 // ربات هوش مصنوعی بله (Bale) — Cloudflare Worker
-// نسخه ۱۲: حذف خودکار دستورات + جدا شدن reset و clear
+// نسخه ۱۳: صف کانتکست برای /infoid + بهبود /reply
 // ============================================================
 
 const MODELS = [
@@ -21,6 +21,7 @@ const DEFAULT_MODEL_ID = 'gemma';
 const MAX_HISTORY = 20;
 const HISTORY_TTL = 60 * 60 * 24 * 7;
 const MSG_TTL = 60 * 60 * 24 * 7;
+const CTX_QUEUE_TTL = 60 * 60; // یک ساعت
 
 const NO_REPLY_MARKER = '__NO_REPLY__';
 const DELETE_MARKER   = '__DELETE__';
@@ -83,8 +84,7 @@ function getIranTimestamp(unixSeconds) {
 
 const BASE_PROMPT = `اسم تو ربات «باهم کتاب» هست. تو عضو تیم امانت دوست داشتنی هستی و یکی از مدیریت کننده های خوب گروه امانت دوست داشتنی.باید به زبان محاوره‌ای و محترمانه و با استفاده مناسب و بامزه از ایموجی‌ها و خیلی صمیمی ولی محترمانه جواب بدی 
 از افعال جمع هم تا جای امکان استفاده کن که احترام حفظ بشه ولی صمیمی و دوست داشتنی باش.
-موقع خطاب قرار دادن از استفاده از اسم شخص پرهیز کن . خیلی مهمه
-از خطاب هایی مثل علی عزیز یا زهرا جان و... پرهیز کن تا جای ممکن که یه وقت برای کسی سوء تفاهم پیش نیاد. این خیلی نکته مهمیه. نباید به اسم کوچیک گسی رو صدا بزنی یا با کلمه های مثل فلانی جان صداش بزنی.
+از خطاب هایی مثل علی عزیز یا زهرا جان و... پرهیز کن تا جای ممکن که یه وقت برای کسی سوء تفاهم پیش نیاد. به هیچ وجه به اسم خطابشون نکن. خیلی مهمه
 ضمن اینکه اصلا خیلی از اوقات بعضی کاربر ها اسمشون اصلا مشخص نمیکنه چیه حتی جنسیتشون رو هم مشخص نمیکنه
 تو یکی از ادمین‌های گروه امانت دوست‌داشتنی هستی باید مثل یه ادمین حرفه ای باشی و اصولی جواب بدی و باید به اعضا کمک کنی کتاب امانت بدن یا کتاب امانت بگیرن.
 و به این کار هم تشویقشون کنی و انگیزه بدی.
@@ -356,6 +356,51 @@ function getSenderName(message) {
   return 'کاربر';
 }
 
+// ============================================================
+// صف کانتکست (برای /infoid)
+// ============================================================
+async function pushContextQueue(chatId, msgData, env) {
+  try {
+    const key = `ctxqueue:${chatId}`;
+    const raw = await env.KV.get(key);
+    const queue = raw ? JSON.parse(raw) : [];
+    if (!queue.find((q) => q.messageId === msgData.messageId)) {
+      queue.push(msgData);
+    }
+    const trimmed = queue.slice(-10);
+    await env.KV.put(key, JSON.stringify(trimmed), { expirationTtl: CTX_QUEUE_TTL });
+    return trimmed.length;
+  } catch (err) {
+    console.error('pushContextQueue error:', err);
+    return 0;
+  }
+}
+
+async function getAndClearContextQueue(chatId, env) {
+  try {
+    const key = `ctxqueue:${chatId}`;
+    const raw = await env.KV.get(key);
+    if (!raw) return [];
+    const queue = JSON.parse(raw);
+    await env.KV.delete(key);
+    return queue;
+  } catch (err) {
+    return [];
+  }
+}
+
+async function peekContextQueue(chatId, env) {
+  try {
+    const raw = await env.KV.get(`ctxqueue:${chatId}`);
+    return raw ? JSON.parse(raw) : [];
+  } catch (err) {
+    return [];
+  }
+}
+
+// ============================================================
+// پردازش پیام‌ها
+// ============================================================
 async function handleMessage(message, env) {
   const chatId = message.chat.id;
   const chatType = message.chat.type;
@@ -368,7 +413,6 @@ async function handleMessage(message, env) {
   const isGroup = (chatType === 'group' || chatType === 'supergroup');
   const messageDate = message.date || Math.floor(Date.now() / 1000);
 
-  // ذخیره reply_to_message (برای دور زدن Group Privacy)
   if (isGroup && message.reply_to_message) {
     const rtm = message.reply_to_message;
     const rtmText = (rtm.text || rtm.caption || '').trim();
@@ -377,9 +421,7 @@ async function handleMessage(message, env) {
     }
   }
 
-  // ============================================================
-  // /myid
-  // ============================================================
+  // ---------- /myid ----------
   if (text === '/myid') {
     if (isGroup) {
       await deleteMessage(chatId, message.message_id, env);
@@ -390,22 +432,17 @@ async function handleMessage(message, env) {
     return;
   }
 
-  // ============================================================
-  // /start
-  // ============================================================
+  // ---------- /start ----------
   if (text === '/start' && !isGroup) {
-    await sendMessage(chatId, 'سلام 👋 من «باهم کتاب» هستم، دستیار گروه امانت کتاب.\n\n📌 دستورات ادمین:\n\n🔹 /myid — آیدی عددی\n🔹 /infoid — توی گروه، با ریپلای روی هر پیام\n🔹 /reply <chat_id> <msg_id> [راهنما] — ریپلای هوشمند\n🔹 /edit <chat_id> <msg_id> <متن> — ویرایش پیام ربات\n🔹 /model — تغییر مدل AI\n🔹 /reset — تأیید (حافظه دست نمی‌خوره)\n🔹 /clear <chat_id> — پاک کردن حافظه گروه', env, message.message_id);
+    await sendMessage(chatId, 'سلام 👋 من «باهم کتاب» هستم، دستیار گروه امانت کتاب.\n\n📌 دستورات ادمین:\n\n🔹 /myid — آیدی عددی\n🔹 /infoid — توی گروه، با ریپلای روی هر پیام (چند بار بزنی، همه به صف کانتکست اضافه می‌شن)\n🔹 /reply <chat_id> <msg_id> [راهنما] — ریپلای هوشمند\n🔹 /edit <chat_id> <msg_id> <متن> — ویرایش پیام ربات\n🔹 /model — تغییر مدل AI\n🔹 /reset — تأیید (حافظه دست نمی‌خوره)\n🔹 /clear <chat_id> — پاک کردن حافظه گروه', env, message.message_id);
     return;
   }
 
-  // ذخیره پیام‌های گروه
   if (isGroup) {
     await storeMessage(chatId, message.message_id, senderName, text, messageDate, env);
   }
 
-  // ============================================================
-  // /infoid
-  // ============================================================
+  // ---------- /infoid (با صف کانتکست) ----------
   if (text === '/infoid' && isGroup) {
     const target = message.reply_to_message;
     await deleteMessage(chatId, message.message_id, env);
@@ -419,15 +456,23 @@ async function handleMessage(message, env) {
       await storeMessage(chatId, target.message_id, targetSender, targetText, targetDate, env);
     }
 
+    // اضافه کردن به صف کانتکست
+    const queueLength = await pushContextQueue(chatId, {
+      messageId: target.message_id,
+      sender: targetSender,
+      text: targetText,
+      date: targetDate,
+    }, env);
+
     const infoMsg = `📌 اطلاعات پیام:\n\n` +
       `chat_id: \`${chatId}\`\n` +
       `message_id: \`${target.message_id}\`\n` +
       `فرستنده: ${targetSender}\n` +
       `زمان: ${getIranTimestamp(targetDate)}\n` +
       `متن: ${targetText.slice(0, 200)}${targetText.length > 200 ? '...' : ''}\n\n` +
-      `✅ این پیام ذخیره شد. توی چت خصوصی:\n\n` +
-      `برای ریپلای:\n\`/reply ${chatId} ${target.message_id}\`\n\n` +
-      `با راهنما:\n\`/reply ${chatId} ${target.message_id} با محبت جواب بده\`\n\n` +
+      `📚 الان ${queueLength} پیام توی صف کانتکست هست.\n\n` +
+      `💡 نکته: اگه می‌خوای AI پیام‌های قبل و بعد رو هم ببینه، روی هر کدوم ریپلای بزن و /infoid بفرست. همه به صف اضافه می‌شن.\n\n` +
+      `برای ریپلای نهایی توی چت خصوصی:\n\`/reply ${chatId} ${target.message_id} [راهنما]\`\n\n` +
       `برای ویرایش (اگه پیام رباته):\n\`/edit ${chatId} ${target.message_id} <متن جدید>\``;
 
     try {
@@ -438,9 +483,7 @@ async function handleMessage(message, env) {
     return;
   }
 
-  // ============================================================
-  // /model
-  // ============================================================
+  // ---------- /model ----------
   if (text === '/model' && isGroup) {
     const ok = await checkIsAdmin(chatId, senderId, env);
     await deleteMessage(chatId, message.message_id, env);
@@ -449,9 +492,7 @@ async function handleMessage(message, env) {
     return;
   }
 
-  // ============================================================
-  // /reset — فقط تأیید، بدون پاک کردن حافظه
-  // ============================================================
+  // ---------- /reset ----------
   if (text === '/reset' && isGroup) {
     const ok = await checkIsAdmin(chatId, senderId, env);
     await deleteMessage(chatId, message.message_id, env);
@@ -465,44 +506,36 @@ async function handleMessage(message, env) {
     return;
   }
 
-  // ============================================================
-  // /clear — پاک کردن حافظه
-  // ============================================================
+  // ---------- /clear ----------
   if (text === '/clear' && isGroup) {
     const ok = await checkIsAdmin(chatId, senderId, env);
     await deleteMessage(chatId, message.message_id, env);
     if (!ok) return;
     await env.KV.delete(`history:${chatId}`);
+    await env.KV.delete(`ctxqueue:${chatId}`);
     await sendMessage(senderId, `✅ حافظه گروه \`${chatId}\` پاک شد.`, env);
     return;
   }
 
-  if (text === '/clear' || (text.startsWith('/clear ') && !isGroup)) {
-    if (!isGroup) {
-      const rest = text.replace(/^\/clear\s*/i, '').trim();
-      if (!rest) {
-        await sendMessage(chatId, 'فرمت: `/clear <chat_id>`\nمثال: `/clear -1001234567890`', env, message.message_id);
-        return;
-      }
-      const targetChatId = Number(rest);
-      if (!targetChatId) {
-        await sendMessage(chatId, '❌ آیدی نامعتبره.', env, message.message_id);
-        return;
-      }
-      const ok = await checkIsAdmin(targetChatId, senderId, env);
-      if (!ok) {
-        await sendMessage(chatId, '⚠️ شما ادمین آن گروه نیستید.', env, message.message_id);
-        return;
-      }
-      await env.KV.delete(`history:${targetChatId}`);
-      await sendMessage(chatId, `✅ حافظه گروه \`${targetChatId}\` پاک شد.`, env, message.message_id);
+  if (text.startsWith('/clear ') && !isGroup) {
+    const rest = text.replace(/^\/clear\s*/i, '').trim();
+    const targetChatId = Number(rest);
+    if (!targetChatId) {
+      await sendMessage(chatId, '❌ آیدی نامعتبره.', env, message.message_id);
       return;
     }
+    const ok = await checkIsAdmin(targetChatId, senderId, env);
+    if (!ok) {
+      await sendMessage(chatId, '⚠️ شما ادمین آن گروه نیستید.', env, message.message_id);
+      return;
+    }
+    await env.KV.delete(`history:${targetChatId}`);
+    await env.KV.delete(`ctxqueue:${targetChatId}`);
+    await sendMessage(chatId, `✅ حافظه گروه \`${targetChatId}\` پاک شد.`, env, message.message_id);
+    return;
   }
 
-  // ============================================================
-  // /edit
-  // ============================================================
+  // ---------- /edit ----------
   if (text === '/edit' || text.startsWith('/edit ') || text.startsWith('/edit\n')) {
     if (!isGroup) {
       const rest = text.replace(/^\/edit\s*/i, '').trim();
@@ -545,9 +578,7 @@ async function handleMessage(message, env) {
     return;
   }
 
-  // ============================================================
-  // /reply
-  // ============================================================
+  // ---------- /reply ----------
   if (text === '/reply' || text.startsWith('/reply ') || text.startsWith('/reply\n')) {
     if (!isGroup) {
       const rest = text.replace(/^\/reply\s*/i, '').trim();
@@ -572,8 +603,11 @@ async function handleMessage(message, env) {
         return;
       }
 
-      await generateReplyToMessage(targetChatId, targetMessageId, target.sender, target.text, target.date, instruction, env);
-      await sendMessage(chatId, `✅ جواب به پیام \`${targetMessageId}\` فرستاده شد.`, env, message.message_id);
+      // صف کانتکست رو بگیر و پاک کن
+      const contextQueue = await getAndClearContextQueue(targetChatId, env);
+
+      await generateReplyToMessage(targetChatId, targetMessageId, target.sender, target.text, target.date, instruction, contextQueue, env);
+      await sendMessage(chatId, `✅ جواب به پیام \`${targetMessageId}\` فرستاده شد.\n📚 از ${contextQueue.length} پیام کانتکست استفاده شد.`, env, message.message_id);
       return;
     }
 
@@ -592,13 +626,13 @@ async function handleMessage(message, env) {
     const originalDate = originalMsg.date || Math.floor(Date.now() / 1000);
     const instruction = text.replace(/^\/reply\s*/i, '').replace(/\n/g, ' ').trim();
 
-    await generateReplyToMessage(chatId, originalId, originalSender, originalText, originalDate, instruction, env);
+    const contextQueue = await getAndClearContextQueue(chatId, env);
+
+    await generateReplyToMessage(chatId, originalId, originalSender, originalText, originalDate, instruction, contextQueue, env);
     return;
   }
 
-  // ============================================================
-  // /image / /imagehd
-  // ============================================================
+  // ---------- /image / /imagehd ----------
   if (text === '/image' || text.startsWith('/image ')) {
     const prompt = text.slice('/image'.length).trim();
     if (isGroup) await deleteMessage(chatId, message.message_id, env);
@@ -623,18 +657,12 @@ async function handleMessage(message, env) {
     return;
   }
 
-  // ============================================================
-  // هر دستور ناشناخته توی گروه → حذف بشه
-  // ============================================================
   if (isGroup && text.startsWith('/')) {
     await deleteMessage(chatId, message.message_id, env);
     return;
   }
   if (!isGroup && text.startsWith('/')) return;
 
-  // ============================================================
-  // پیام عادی
-  // ============================================================
   await sendChatAction(chatId, env);
   await replyWithAI(chatId, text, env, message.message_id, isGroup, senderName, messageDate);
 }
@@ -673,27 +701,42 @@ async function getStoredMessage(chatId, messageId, env) {
   }
 }
 
-async function generateReplyToMessage(chatId, originalId, originalSender, originalText, originalDate, instruction, env) {
+// ============================================================
+// /reply هوشمند با کانتکست کامل (شامل صف)
+// ============================================================
+async function generateReplyToMessage(chatId, originalId, originalSender, originalText, originalDate, instruction, contextQueue, env) {
   const modelId = (await env.KV.get(`model:${chatId}`)) || DEFAULT_MODEL_ID;
 
+  // تاریخچه گروه
   const history = await getHistory(chatId, env);
-  const contextLines = history.map((h) => h.content).join('\n');
+  const historyLines = history.map((h) => h.content).join('\n');
+
+  // صف کانتکست (از /infoid های ادمین)
+  let queueLines = '';
+  if (contextQueue && contextQueue.length) {
+    queueLines = contextQueue.map((q) =>
+      `[msg ${q.messageId}] ${q.sender} | ${getIranTimestamp(q.date)} | ${q.text}`
+    ).join('\n');
+  }
+
   const targetTimestamp = getIranTimestamp(originalDate);
 
-  const userMessage = `[تاریخچه پیام‌های گروه - فقط برای درک موقعیت، به اینها جواب نده]
-${contextLines || '(تاریخچه خالیه)'}
+  const userMessage = `[بخش ۱: تاریخچه پیام‌های گروه — فقط برای درک موقعیت]
+${historyLines || '(خالی)'}
 
-[پایان تاریخچه]
+[بخش ۲: پیام‌های مهمی که ادمین انتخاب کرده (کانتکست هدفمند)]
+${queueLines || '(ادمین پیام مهمی انتخاب نکرده)'}
 
-[پیام هدفی که ادمین می‌خواد به این جواب بدی]
+[بخش ۳: پیام هدفی که باید فقط به این جواب بدی]
+message_id: ${originalId}
 زمان ارسال: ${targetTimestamp}
 فرستنده: ${originalSender}
 متن پیام: "${originalText}"
 
-[راهنمای ادمین]
+[بخش ۴: راهنمای ادمین]
 ${instruction || 'یک جواب طبیعی، مفید و مناسب به این پیام بده.'}
 
-حالا فقط و فقط متن جواب به «پیام هدف» رو بنویس. بدون هیچ مقدمه یا توضیح اضافه.`;
+حالا فقط و فقط متن جواب به «پیام هدف» (بخش ۳) رو بنویس. بدون هیچ مقدمه یا توضیح اضافه.`;
 
   try {
     const { reply } = await runAIWithFallback(env, modelId, [
@@ -831,111 +874,4 @@ async function saveHistory(chatId, history, env) {
 
 async function pushToHistory(chatId, role, content, env) {
   const history = await getHistory(chatId, env);
-  history.push({ role, content });
-  await saveHistory(chatId, history, env);
-}
-
-async function sendMessage(chatId, text, env, replyToMessageId = null) {
-  const body = { chat_id: chatId, text };
-  if (replyToMessageId) body.reply_to_message_id = replyToMessageId;
-  try {
-    const res = await fetch(`${baleApi(env.BALE_BOT_TOKEN)}/sendMessage`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    const data = await res.json();
-    return data && data.result ? data.result.message_id : null;
-  } catch (err) {
-    console.error('sendMessage error:', err);
-    return null;
-  }
-}
-
-async function editMessageText(chatId, messageId, newText, env) {
-  try {
-    const res = await fetch(`${baleApi(env.BALE_BOT_TOKEN)}/editMessageText`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: chatId, message_id: messageId, text: newText }),
-    });
-    if (!res.ok) console.error('editMessageText failed:', res.status, await res.text());
-  } catch (err) {
-    console.error('editMessageText error:', err && err.message ? err.message : String(err));
-  }
-}
-
-async function deleteMessage(chatId, messageId, env) {
-  try {
-    const res = await fetch(`${baleApi(env.BALE_BOT_TOKEN)}/deleteMessage`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: chatId, message_id: messageId }),
-    });
-    if (!res.ok) console.error('deleteMessage failed:', res.status, await res.text());
-  } catch (err) {
-    console.error('deleteMessage error:', err && err.message ? err.message : String(err));
-  }
-}
-
-async function sendChatAction(chatId, env, action = 'typing') {
-  await fetch(`${baleApi(env.BALE_BOT_TOKEN)}/sendChatAction`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ chat_id: chatId, action }),
-  });
-}
-
-async function sendPhoto(chatId, imageBytes, caption, env) {
-  const form = new FormData();
-  form.append('chat_id', String(chatId));
-  if (caption) form.append('caption', caption.slice(0, 1000));
-  form.append('photo', new Blob([imageBytes], { type: 'image/jpeg' }), 'image.jpg');
-  await fetch(`${baleApi(env.BALE_BOT_TOKEN)}/sendPhoto`, { method: 'POST', body: form });
-}
-
-async function replyWithImage(chatId, prompt, model, env) {
-  try {
-    const result = await env.AI.run(model, { prompt, seed: Math.floor(Math.random() * 1000000) });
-    let bytes = null;
-    if (result && typeof result.image === 'string') {
-      const binary = atob(result.image);
-      bytes = new Uint8Array(binary.length);
-      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-    } else if (result) {
-      const buf = await new Response(result).arrayBuffer();
-      if (buf && buf.byteLength) bytes = new Uint8Array(buf);
-    }
-    if (!bytes || !bytes.length) {
-      await sendMessage(chatId, '⚠️ ساخت تصویر جواب قابل‌فهمی برنگردوند.', env);
-      return;
-    }
-    await sendPhoto(chatId, bytes, prompt, env);
-  } catch (err) {
-    console.error('Image gen error:', err && err.message ? err.message : String(err));
-    await sendMessage(chatId, '⚠️ خطا در ساخت تصویر.', env);
-  }
-}
-
-async function answerCallback(callbackId, env, text) {
-  await fetch(`${baleApi(env.BALE_BOT_TOKEN)}/answerCallbackQuery`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ callback_query_id: callbackId, text }),
-  });
-}
-
-async function sendModelPicker(chatId, env) {
-  const keyboard = {
-    inline_keyboard: MODELS.map((m) => [{ text: m.name, callback_data: `model:${m.id}` }]),
-  };
-  await fetch(`${baleApi(env.BALE_BOT_TOKEN)}/sendMessage`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      chat_id: chatId,
-      text: 'یکی از مدل‌ها رو انتخاب کن:',
-      reply_markup: keyboard,
-    }),
-  });
-}
+ 
