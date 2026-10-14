@@ -1,6 +1,6 @@
 // ============================================================
 // ربات هوش مصنوعی بله (Bale) — Cloudflare Worker
-// نسخه ۸: تاریخچه با تاریخ و ساعت شمسی
+// نسخه ۱۰: ادمین‌محور با API بله + دستورات در چت خصوصی
 // ============================================================
 
 const MODELS = [
@@ -20,6 +20,7 @@ const DEFAULT_MODEL_ID = 'gemma';
 
 const MAX_HISTORY = 20;
 const HISTORY_TTL = 60 * 60 * 24 * 7;
+const MSG_TTL = 60 * 60 * 24 * 7;
 
 const NO_REPLY_MARKER = '__NO_REPLY__';
 const DELETE_MARKER   = '__DELETE__';
@@ -29,7 +30,28 @@ function baleApi(token) {
 }
 
 // ------------------------------------------------------------
-// تبدیل تاریخ میلادی به شمسی
+// ادمین چک از طریق API خود بله
+// ------------------------------------------------------------
+async function checkIsAdmin(chatId, userId, env) {
+  if (!chatId || !userId) return false;
+  try {
+    const res = await fetch(`${baleApi(env.BALE_BOT_TOKEN)}/getChatMember`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: chatId, user_id: userId }),
+    });
+    const data = await res.json();
+    if (!data.ok) return false;
+    const status = data.result && data.result.status;
+    return status === 'administrator' || status === 'creator';
+  } catch (err) {
+    console.error('checkIsAdmin error:', err && err.message ? err.message : String(err));
+    return false;
+  }
+}
+
+// ------------------------------------------------------------
+// تاریخ شمسی
 // ------------------------------------------------------------
 function gregorianToJalali(gy, gm, gd) {
   const g_d_m = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
@@ -50,26 +72,18 @@ function gregorianToJalali(gy, gm, gd) {
   return { jy, jm, jd };
 }
 
-// برمی‌گردونه: «پنجشنبه ۱۴۰۳/۰۷/۲۴ ساعت ۱۴:۳۰»
 function getIranTimestamp(unixSeconds) {
   if (!unixSeconds) return '';
-
-  // ایران UTC+3:30 (از سال ۱۴۰۱ ساعت تابستانی حذف شده)
   const iranMs = unixSeconds * 1000 + (3 * 60 + 30) * 60 * 1000;
   const d = new Date(iranMs);
-
   const gy = d.getUTCFullYear();
   const gm = d.getUTCMonth() + 1;
   const gd = d.getUTCDate();
   const { jy, jm, jd } = gregorianToJalali(gy, gm, gd);
-
   const h = String(d.getUTCHours()).padStart(2, '0');
   const min = String(d.getUTCMinutes()).padStart(2, '0');
-
-  // getUTCDay(): 0 = یکشنبه، 1 = دوشنبه، ...، 6 = شنبه
   const weekdays = ['یکشنبه', 'دوشنبه', 'سه‌شنبه', 'چهارشنبه', 'پنجشنبه', 'جمعه', 'شنبه'];
   const weekday = weekdays[d.getUTCDay()];
-
   return `${weekday} ${jy}/${String(jm).padStart(2, '0')}/${String(jd).padStart(2, '0')} ساعت ${h}:${min}`;
 }
 
@@ -78,7 +92,7 @@ function getIranTimestamp(unixSeconds) {
 // ------------------------------------------------------------
 const BASE_PROMPT = `اسم تو ربات «باهم کتاب» هست. تو عضو تیم امانت دوست داشتنی هستی و یکی از مدیریت کننده های خوب گروه امانت دوست داشتنی.باید به زبان محاوره‌ای و محترمانه و با استفاده مناسب و بامزه از ایموجی‌ها و خیلی صمیمی ولی محترمانه جواب بدی 
 از افعال جمع هم تا جای امکان استفاده کن که احترام حفظ بشه ولی صمیمی و دوست داشتنی باش.
-از خطاب هایی مثل علی عزیز یا زهرا جان و... پرهیز کن تا جای ممکن که یه وقت برای کسی سوء تفاهم پیش نیاد. میتونی بعضی اوقات خطاب انجام بدی 
+از خطاب هایی مثل علی عزیز یا زهرا جان و... پرهیز کن تا جای ممکن که یه وقت برای کسی سوء تفاهم پیش نیاد. ولی صمیمی باش
 ضمن اینکه اصلا خیلی از اوقات بعضی کاربر ها اسمشون اصلا مشخص نمیکنه چیه حتی جنسیتشون رو هم مشخص نمیکنه
 تو یکی از ادمین‌های گروه امانت دوست‌داشتنی هستی باید مثل یه ادمین حرفه ای باشی و اصولی جواب بدی و باید به اعضا کمک کنی کتاب امانت بدن یا کتاب امانت بگیرن.
 و به این کار هم تشویقشون کنی و انگیزه بدی.
@@ -220,7 +234,7 @@ ${NO_REPLY_MARKER}
 }
 
 // ------------------------------------------------------------
-// ورودی اصلی Worker
+// ورودی اصلی
 // ------------------------------------------------------------
 export default {
   async fetch(request, env) {
@@ -335,7 +349,7 @@ async function setupWebhook() {
 }
 
 // ------------------------------------------------------------
-// پردازش پیام‌های ورودی
+// پردازش پیام‌ها
 // ------------------------------------------------------------
 async function handleUpdate(update, env) {
   if (update.callback_query) {
@@ -360,36 +374,113 @@ async function handleMessage(message, env) {
   const chatId = message.chat.id;
   const chatType = message.chat.type;
   const text = (message.text || '').trim();
+  const senderName = getSenderName(message);
+  const senderId = message.from && message.from.id;
 
   if (!text) return;
 
   const isGroup = (chatType === 'group' || chatType === 'supergroup');
-  const senderName = getSenderName(message);
   const messageDate = message.date || Math.floor(Date.now() / 1000);
 
-  if (text === '/start') {
-    await sendMessage(chatId, 'سلام 👋 من «باهم کتاب» هستم، دستیار گروه امانت کتاب.\nبرای انتخاب مدل از /model استفاده کن.\nبرای ساخت تصویر: /image توضیح تصویر', env, message.message_id);
-    await sendModelPicker(chatId, env);
+  // ---------- /myid : هر کسی ----------
+  if (text === '/myid') {
+    await sendMessage(chatId, `🆔 آیدی عددی شما: \`${senderId || 'نامشخص'}\`\nآیدی این چت: \`${chatId}\``, env, message.message_id);
     return;
   }
 
-  if (text === '/model') {
-    await sendModelPicker(chatId, env);
+  // ---------- /start ----------
+  if (text === '/start' && !isGroup) {
+    await sendMessage(chatId, 'سلام 👋 من «باهم کتاب» هستم، دستیار گروه امانت کتاب.\n\n📌 دستورات ادمین:\n/myid — گرفتن آیدی\n/reply <chat_id> <msg_id> [راهنما] — ریپلای هوشمند در چت خصوصی\n/edit <chat_id> <msg_id> <متن جدید> — ویرایش پیام ربات\n\n📌 دستورات گروه (به عنوان ادمین):\n/infoid — با ریپلای روی هر پیام، آیدی‌هاش رو برات پیوی می‌کنه\n/reply — با ریپلای روی پیام + دستور\n/edit — با ریپلای روی پیام ربات + دستور\n/reset — پاک کردن حافظه', env, message.message_id);
     return;
   }
 
-  if (text === '/reset') {
-    await env.KV.delete(`history:${chatId}`);
-    await sendMessage(chatId, '✅ حافظه مکالمه پاک شد.', env, message.message_id);
-    return;
+  // ---------- ذخیره پیام‌های گروه برای later lookup ----------
+  if (isGroup) {
+    await storeMessage(chatId, message.message_id, senderName, text, messageDate, env);
   }
 
-  if (text === '/edit' || text.startsWith('/edit ') || text.startsWith('/edit\n')) {
+  // ---------- /infoid : توی گروه، ریپلای روی پیام + این دستور ----------
+  if (text === '/infoid' && isGroup) {
     const target = message.reply_to_message;
+    // فوری حذف
     await deleteMessage(chatId, message.message_id, env);
     if (!target) return;
+
+    const targetSender = getSenderName(target);
+    const targetText = (target.text || target.caption || '').trim();
+    const targetDate = target.date || Math.floor(Date.now() / 1000);
+
+    const infoMsg = `📌 اطلاعات پیام:\n\n` +
+      `chat_id: \`${chatId}\`\n` +
+      `message_id: \`${target.message_id}\`\n` +
+      `فرستنده: ${targetSender}\n` +
+      `زمان: ${getIranTimestamp(targetDate)}\n` +
+      `متن: ${targetText.slice(0, 200)}${targetText.length > 200 ? '...' : ''}\n\n` +
+      `برای ریپلای در چت خصوصی:\n/reply ${chatId} ${target.message_id}\n\n` +
+      `برای ویرایش (اگه پیام رباته):\n/edit ${chatId} ${target.message_id} <متن جدید>`;
+
+    try {
+      await sendMessage(senderId, infoMsg, env);
+    } catch (err) {
+      console.error('infoid PM error:', err);
+    }
+    return;
+  }
+
+  // ---------- /model (فقط ادمین گروه) ----------
+  if (text === '/model' && isGroup) {
+    const ok = await checkIsAdmin(chatId, senderId, env);
+    if (!ok) return;
+    await sendModelPicker(chatId, env);
+    return;
+  }
+
+  // ---------- /reset (فقط ادمین گروه) ----------
+  if (text === '/reset' && isGroup) {
+    const ok = await checkIsAdmin(chatId, senderId, env);
+    if (!ok) return;
+    await env.KV.delete(`history:${chatId}`);
+    await sendMessage(chatId, '✅ حافظه پاک شد.', env, message.message_id);
+    return;
+  }
+
+  // ---------- /edit ----------
+  if (text === '/edit' || text.startsWith('/edit ') || text.startsWith('/edit\n')) {
+    // چت خصوصی: /edit <chat_id> <message_id> <new text>
+    if (!isGroup) {
+      const rest = text.replace(/^\/edit\s*/i, '').trim();
+      const parts = rest.split(/\s+/);
+      if (parts.length < 3) {
+        await sendMessage(chatId, 'فرمت: /edit <chat_id> <message_id> <متن جدید>', env, message.message_id);
+        return;
+      }
+      const targetChatId = Number(parts[0]);
+      const targetMessageId = Number(parts[1]);
+      const newText = parts.slice(2).join(' ');
+
+      const ok = await checkIsAdmin(targetChatId, senderId, env);
+      if (!ok) {
+        await sendMessage(chatId, '⚠️ شما ادمین آن گروه نیستید.', env, message.message_id);
+        return;
+      }
+
+      await editMessageText(targetChatId, targetMessageId, newText, env);
+      await sendMessage(chatId, `✅ پیام \`${targetMessageId}\` توی گروه \`${targetChatId}\` ویرایش شد.`, env, message.message_id);
+      return;
+    }
+
+    // گروه: ریپلای روی پیام ربات + /edit
+    const ok = await checkIsAdmin(chatId, senderId, env);
+    if (!ok) return;
+
+    const target = message.reply_to_message;
+    // فوری حذف
+    await deleteMessage(chatId, message.message_id, env);
+    if (!target) return;
+
     const isBotMessage = target.from && target.from.is_bot;
     if (!isBotMessage) return;
+
     const newText = text.replace(/^\/edit\s*/i, '').replace(/\r/g, '').trim();
     if (!newText) {
       await deleteMessage(chatId, target.message_id, env);
@@ -399,35 +490,74 @@ async function handleMessage(message, env) {
     return;
   }
 
+  // ---------- /reply ----------
   if (text === '/reply' || text.startsWith('/reply ') || text.startsWith('/reply\n')) {
+    // چت خصوصی: /reply <chat_id> <message_id> [guidance]
+    if (!isGroup) {
+      const rest = text.replace(/^\/reply\s*/i, '').trim();
+      const parts = rest.split(/\s+/);
+      if (parts.length < 2) {
+        await sendMessage(chatId, 'فرمت: /reply <chat_id> <message_id> [راهنما]\nمثال: /reply -12345 42 با محبت جواب بده', env, message.message_id);
+        return;
+      }
+      const targetChatId = Number(parts[0]);
+      const targetMessageId = Number(parts[1]);
+      const instruction = parts.slice(2).join(' ').trim();
+
+      const ok = await checkIsAdmin(targetChatId, senderId, env);
+      if (!ok) {
+        await sendMessage(chatId, '⚠️ شما ادمین آن گروه نیستید.', env, message.message_id);
+        return;
+      }
+
+      // پیام هدف رو از ذخیره‌گاه پیدا کن
+      const target = await getStoredMessage(targetChatId, targetMessageId, env);
+      if (!target) {
+        await sendMessage(chatId, '⚠️ پیام مورد نظر پیدا نشد. (ممکنه قدیمی باشه یا ربات اون رو ندیده باشه) با /infoid توی گروه چک کن.', env, message.message_id);
+        return;
+      }
+
+      await generateReplyToMessage(targetChatId, targetMessageId, target.sender, target.text, target.date, instruction, env);
+      await sendMessage(chatId, `✅ جواب به پیام \`${targetMessageId}\` فرستاده شد.`, env, message.message_id);
+      return;
+    }
+
+    // گروه: ریپلای روی پیام + /reply
+    const ok = await checkIsAdmin(chatId, senderId, env);
+    if (!ok) return;
+
     const originalMsg = message.reply_to_message;
+    // فوری حذف
     await deleteMessage(chatId, message.message_id, env);
     if (!originalMsg) return;
+
     const originalText = (originalMsg.text || originalMsg.caption || '').trim();
     if (!originalText) return;
+
     const originalSender = getSenderName(originalMsg);
     const originalId = originalMsg.message_id;
     const originalDate = originalMsg.date || Math.floor(Date.now() / 1000);
     const instruction = text.replace(/^\/reply\s*/i, '').replace(/\n/g, ' ').trim();
+
     await generateReplyToMessage(chatId, originalId, originalSender, originalText, originalDate, instruction, env);
     return;
   }
 
+  // ---------- /image /imagehd ----------
   if (text === '/image' || text.startsWith('/image ')) {
     const prompt = text.slice('/image'.length).trim();
     if (!prompt) {
-      await sendMessage(chatId, 'بعد از دستور /image توضیح تصویر رو بنویس.\nمثال: /image یک گربه فضانورد روی ماه', env, message.message_id);
+      await sendMessage(chatId, 'بعد از /image توضیح تصویر رو بنویس.', env, message.message_id);
       return;
     }
     await sendChatAction(chatId, env, 'upload_photo');
     await replyWithImage(chatId, prompt, IMAGE_MODEL_FAST, env);
     return;
   }
-
   if (text === '/imagehd' || text.startsWith('/imagehd ')) {
     const prompt = text.slice('/imagehd'.length).trim();
     if (!prompt) {
-      await sendMessage(chatId, 'بعد از دستور /imagehd توضیح تصویر رو بنویس.\nمثال: /imagehd یک منظره کوهستانی در غروب', env, message.message_id);
+      await sendMessage(chatId, 'بعد از /imagehd توضیح تصویر رو بنویس.', env, message.message_id);
       return;
     }
     await sendChatAction(chatId, env, 'upload_photo');
@@ -452,24 +582,56 @@ async function handleCallback(cb, env) {
 
     await env.KV.put(`model:${chatId}`, modelId);
     await answerCallback(cb.id, env, `مدل ${modelDef.name} انتخاب شد`);
-    await sendMessage(chatId, `✅ مدل فعال: ${modelDef.name}\nحالا سوالت رو بپرس.`, env);
+    await sendMessage(chatId, `✅ مدل فعال: ${modelDef.name}`, env);
   }
 }
 
+// ------------------------------------------------------------
+// ذخیره پیام‌ها برای جستجوی بعدی با message_id
+// ------------------------------------------------------------
+async function storeMessage(chatId, messageId, sender, text, date, env) {
+  try {
+    await env.KV.put(`msg:${chatId}:${messageId}`, JSON.stringify({
+      chatId, messageId, sender, text, date,
+    }), { expirationTtl: MSG_TTL });
+  } catch (err) {
+    console.error('storeMessage error:', err);
+  }
+}
+
+async function getStoredMessage(chatId, messageId, env) {
+  try {
+    const raw = await env.KV.get(`msg:${chatId}:${messageId}`);
+    return raw ? JSON.parse(raw) : null;
+  } catch (err) {
+    return null;
+  }
+}
+
+// ------------------------------------------------------------
+// /reply هوشمند با کانتکست کامل
+// ------------------------------------------------------------
 async function generateReplyToMessage(chatId, originalId, originalSender, originalText, originalDate, instruction, env) {
   const modelId = (await env.KV.get(`model:${chatId}`)) || DEFAULT_MODEL_ID;
 
-  const timestamp = getIranTimestamp(originalDate);
+  const history = await getHistory(chatId, env);
+  const contextLines = history.map((h) => h.content).join('\n');
+  const targetTimestamp = getIranTimestamp(originalDate);
 
-  const userMessage = `یک پیام توی گروه هست که یکی از اعضا نوشته. ادمین می‌خواد یه جواب مناسب به این پیام بدی.
+  const userMessage = `[تاریخچه پیام‌های گروه - فقط برای درک موقعیت، به اینها جواب نده]
+${contextLines || '(تاریخچه خالیه)'}
 
-فرستنده پیام اصلی: «${originalSender}»
-زمان ارسال: ${timestamp}
-متن پیام اصلی: "${originalText}"
+[پایان تاریخچه]
 
-راهنمای ادمین: ${instruction || 'یک جواب طبیعی، مفید و مناسب به این پیام بده.'}
+[پیام هدفی که ادمین می‌خواد به این جواب بدی]
+زمان ارسال: ${targetTimestamp}
+فرستنده: ${originalSender}
+متن پیام: "${originalText}"
 
-حالا فقط و فقط متن جواب رو بنویس، بدون هیچ مقدمه یا توضیح اضافه.`;
+[راهنمای ادمین]
+${instruction || 'یک جواب طبیعی، مفید و مناسب به این پیام بده.'}
+
+حالا فقط و فقط متن جواب به «پیام هدف» رو بنویس. بدون هیچ مقدمه یا توضیح اضافه.`;
 
   try {
     const { reply } = await runAIWithFallback(env, modelId, [
@@ -479,12 +641,18 @@ async function generateReplyToMessage(chatId, originalId, originalSender, origin
 
     if (!reply) return;
 
+    await pushToHistory(chatId, 'user', `[${targetTimestamp}] ${originalSender}: ${originalText}`, env);
+    await pushToHistory(chatId, 'assistant', reply, env);
+
     await sendMessage(chatId, reply, env, originalId);
   } catch (err) {
     console.error('generateReplyToMessage error:', err && err.message ? err.message : String(err));
   }
 }
 
+// ------------------------------------------------------------
+// AI با fallback
+// ------------------------------------------------------------
 async function runAIWithFallback(env, preferredModelId, messages, maxTokens = 1536) {
   const order = [preferredModelId];
   for (const id of FALLBACK_ORDER) {
@@ -502,13 +670,9 @@ async function runAIWithFallback(env, preferredModelId, messages, maxTokens = 15
         messages,
         max_tokens: maxTokens,
       });
-
       const reply = extractText(result);
-      if (reply) {
-        return { reply, modelDef };
-      }
-
-      console.warn(`Model ${modelId} returned empty reply, trying next...`);
+      if (reply) return { reply, modelDef };
+      console.warn(`Model ${modelId} returned empty reply`);
     } catch (err) {
       lastError = err;
       console.error(`Model ${modelId} failed:`, err && err.message ? err.message : String(err));
@@ -522,12 +686,8 @@ async function replyWithAI(chatId, text, env, replyToMessageId, isGroup, senderN
   const modelId = (await env.KV.get(`model:${chatId}`)) || DEFAULT_MODEL_ID;
 
   const history = await getHistory(chatId, env);
-
-  // پیام کاربر با تاریخ/ساعت و اسمش ذخیره می‌شه
   const timestamp = getIranTimestamp(messageDate);
-  const userContent = isGroup
-    ? `[${timestamp}] ${senderName}: ${text}`
-    : `[${timestamp}] ${text}`;
+  const userContent = isGroup ? `[${timestamp}] ${senderName}: ${text}` : `[${timestamp}] ${text}`;
   history.push({ role: 'user', content: userContent });
 
   const systemPrompt = buildSystemPrompt(isGroup);
@@ -541,19 +701,15 @@ async function replyWithAI(chatId, text, env, replyToMessageId, isGroup, senderN
     if (isGroup) {
       const trimmed = reply.trim();
 
-      // حذف پیام + ریپلای تذکر
       if (trimmed.includes(DELETE_MARKER)) {
         const warningText = trimmed.replace(DELETE_MARKER, '').trim();
-        if (warningText) {
-          await sendMessage(chatId, warningText, env, replyToMessageId);
-        }
+        if (warningText) await sendMessage(chatId, warningText, env, replyToMessageId);
         await deleteMessage(chatId, replyToMessageId, env);
         history.pop();
         await saveHistory(chatId, history, env);
         return;
       }
 
-      // سکوت
       if (trimmed === NO_REPLY_MARKER || trimmed.includes(NO_REPLY_MARKER)) {
         const cleaned = trimmed.replace(NO_REPLY_MARKER, '').trim();
         if (!cleaned) {
@@ -576,40 +732,27 @@ async function replyWithAI(chatId, text, env, replyToMessageId, isGroup, senderN
     await saveHistory(chatId, history, env);
     await sendMessage(chatId, reply, env, replyToMessageId);
   } catch (err) {
-    console.error('AI run error (all models):', err && err.message ? err.message : String(err));
-    await sendMessage(chatId, '⚠️ الان نتونستم جواب بدم، چند لحظه دیگه دوباره امتحان کن.', env, replyToMessageId);
+    console.error('AI run error:', err && err.message ? err.message : String(err));
+    await sendMessage(chatId, '⚠️ الان نتونستم جواب بدم.', env, replyToMessageId);
   }
 }
 
 function extractText(result) {
   if (!result) return null;
-
-  if (typeof result.response === 'string' && result.response.trim()) {
-    return stripThinking(result.response);
-  }
-
+  if (typeof result.response === 'string' && result.response.trim()) return stripThinking(result.response);
   if (Array.isArray(result.choices) && result.choices.length) {
     const msg = result.choices[0].message;
-    if (msg && typeof msg.content === 'string' && msg.content.trim()) {
-      return stripThinking(msg.content);
-    }
+    if (msg && typeof msg.content === 'string' && msg.content.trim()) return stripThinking(msg.content);
   }
-
   if (Array.isArray(result.output)) {
     for (const item of result.output) {
       if (item.type === 'message' && Array.isArray(item.content)) {
-        const part = item.content.find(
-          (c) => c.type === 'output_text' || c.type === 'text'
-        );
+        const part = item.content.find((c) => c.type === 'output_text' || c.type === 'text');
         if (part && part.text) return stripThinking(part.text);
       }
     }
   }
-
-  if (typeof result.result === 'string' && result.result.trim()) {
-    return stripThinking(result.result);
-  }
-
+  if (typeof result.result === 'string' && result.result.trim()) return stripThinking(result.result);
   return null;
 }
 
@@ -624,9 +767,13 @@ async function getHistory(chatId, env) {
 
 async function saveHistory(chatId, history, env) {
   const trimmed = history.slice(-MAX_HISTORY);
-  await env.KV.put(`history:${chatId}`, JSON.stringify(trimmed), {
-    expirationTtl: HISTORY_TTL,
-  });
+  await env.KV.put(`history:${chatId}`, JSON.stringify(trimmed), { expirationTtl: HISTORY_TTL });
+}
+
+async function pushToHistory(chatId, role, content, env) {
+  const history = await getHistory(chatId, env);
+  history.push({ role, content });
+  await saveHistory(chatId, history, env);
 }
 
 // ------------------------------------------------------------
@@ -634,14 +781,19 @@ async function saveHistory(chatId, history, env) {
 // ------------------------------------------------------------
 async function sendMessage(chatId, text, env, replyToMessageId = null) {
   const body = { chat_id: chatId, text };
-  if (replyToMessageId) {
-    body.reply_to_message_id = replyToMessageId;
+  if (replyToMessageId) body.reply_to_message_id = replyToMessageId;
+  try {
+    const res = await fetch(`${baleApi(env.BALE_BOT_TOKEN)}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    return data && data.result ? data.result.message_id : null;
+  } catch (err) {
+    console.error('sendMessage error:', err);
+    return null;
   }
-  await fetch(`${baleApi(env.BALE_BOT_TOKEN)}/sendMessage`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
 }
 
 async function editMessageText(chatId, messageId, newText, env) {
@@ -649,15 +801,9 @@ async function editMessageText(chatId, messageId, newText, env) {
     const res = await fetch(`${baleApi(env.BALE_BOT_TOKEN)}/editMessageText`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        chat_id: chatId,
-        message_id: messageId,
-        text: newText,
-      }),
+      body: JSON.stringify({ chat_id: chatId, message_id: messageId, text: newText }),
     });
-    if (!res.ok) {
-      console.error('editMessageText failed:', res.status, await res.text());
-    }
+    if (!res.ok) console.error('editMessageText failed:', res.status, await res.text());
   } catch (err) {
     console.error('editMessageText error:', err && err.message ? err.message : String(err));
   }
@@ -670,9 +816,7 @@ async function deleteMessage(chatId, messageId, env) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ chat_id: chatId, message_id: messageId }),
     });
-    if (!res.ok) {
-      console.error('deleteMessage failed:', res.status, await res.text());
-    }
+    if (!res.ok) console.error('deleteMessage failed:', res.status, await res.text());
   } catch (err) {
     console.error('deleteMessage error:', err && err.message ? err.message : String(err));
   }
@@ -691,22 +835,13 @@ async function sendPhoto(chatId, imageBytes, caption, env) {
   form.append('chat_id', String(chatId));
   if (caption) form.append('caption', caption.slice(0, 1000));
   form.append('photo', new Blob([imageBytes], { type: 'image/jpeg' }), 'image.jpg');
-
-  await fetch(`${baleApi(env.BALE_BOT_TOKEN)}/sendPhoto`, {
-    method: 'POST',
-    body: form,
-  });
+  await fetch(`${baleApi(env.BALE_BOT_TOKEN)}/sendPhoto`, { method: 'POST', body: form });
 }
 
 async function replyWithImage(chatId, prompt, model, env) {
   try {
-    const result = await env.AI.run(model, {
-      prompt,
-      seed: Math.floor(Math.random() * 1000000),
-    });
-
+    const result = await env.AI.run(model, { prompt, seed: Math.floor(Math.random() * 1000000) });
     let bytes = null;
-
     if (result && typeof result.image === 'string') {
       const binary = atob(result.image);
       bytes = new Uint8Array(binary.length);
@@ -715,16 +850,14 @@ async function replyWithImage(chatId, prompt, model, env) {
       const buf = await new Response(result).arrayBuffer();
       if (buf && buf.byteLength) bytes = new Uint8Array(buf);
     }
-
     if (!bytes || !bytes.length) {
       await sendMessage(chatId, '⚠️ ساخت تصویر جواب قابل‌فهمی برنگردوند.', env);
       return;
     }
-
     await sendPhoto(chatId, bytes, prompt, env);
   } catch (err) {
     console.error('Image gen error:', err && err.message ? err.message : String(err));
-    await sendMessage(chatId, '⚠️ خطا در ساخت تصویر. دوباره امتحان کن.', env);
+    await sendMessage(chatId, '⚠️ خطا در ساخت تصویر.', env);
   }
 }
 
