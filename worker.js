@@ -1,6 +1,6 @@
 // ============================================================
 // ربات هوش مصنوعی بله (Bale) — Cloudflare Worker
-// نسخه ۱۰: ادمین‌محور با API بله + دستورات در چت خصوصی
+// نسخه ۱۱: ذخیره reply_to_message + ادمین‌محور با API بله
 // ============================================================
 
 const MODELS = [
@@ -382,6 +382,23 @@ async function handleMessage(message, env) {
   const isGroup = (chatType === 'group' || chatType === 'supergroup');
   const messageDate = message.date || Math.floor(Date.now() / 1000);
 
+  // ⭐ هر پیامی که به عنوان reply_to_message میاد رو ذخیره کن
+  // چون بله با Group Privacy روشن، پیام‌های عادی رو به ربات نشون نمی‌ده
+  if (isGroup && message.reply_to_message) {
+    const rtm = message.reply_to_message;
+    const rtmText = (rtm.text || rtm.caption || '').trim();
+    if (rtmText) {
+      await storeMessage(
+        chatId,
+        rtm.message_id,
+        getSenderName(rtm),
+        rtmText,
+        rtm.date || Math.floor(Date.now() / 1000),
+        env
+      );
+    }
+  }
+
   // ---------- /myid : هر کسی ----------
   if (text === '/myid') {
     await sendMessage(chatId, `🆔 آیدی عددی شما: \`${senderId || 'نامشخص'}\`\nآیدی این چت: \`${chatId}\``, env, message.message_id);
@@ -390,11 +407,11 @@ async function handleMessage(message, env) {
 
   // ---------- /start ----------
   if (text === '/start' && !isGroup) {
-    await sendMessage(chatId, 'سلام 👋 من «باهم کتاب» هستم، دستیار گروه امانت کتاب.\n\n📌 دستورات ادمین:\n/myid — گرفتن آیدی\n/reply <chat_id> <msg_id> [راهنما] — ریپلای هوشمند در چت خصوصی\n/edit <chat_id> <msg_id> <متن جدید> — ویرایش پیام ربات\n\n📌 دستورات گروه (به عنوان ادمین):\n/infoid — با ریپلای روی هر پیام، آیدی‌هاش رو برات پیوی می‌کنه\n/reply — با ریپلای روی پیام + دستور\n/edit — با ریپلای روی پیام ربات + دستور\n/reset — پاک کردن حافظه', env, message.message_id);
+    await sendMessage(chatId, 'سلام 👋 من «باهم کتاب» هستم، دستیار گروه امانت کتاب.\n\n📌 دستورات ادمین:\n/myid — گرفتن آیدی\n/infoid — توی گروه، با ریپلای روی هر پیام، آیدی‌هاش رو برات پیوی می‌کنه\n/reply <chat_id> <msg_id> [راهنما] — ریپلای هوشمند در چت خصوصی\n/edit <chat_id> <msg_id> <متن جدید> — ویرایش پیام ربات\n\n📌 دستورات توی گروه (به عنوان ادمین):\n/infoid — با ریپلای روی هر پیام\n/reply — با ریپلای روی پیام + دستور\n/edit — با ریپلای روی پیام ربات + دستور\n/reset — پاک کردن حافظه', env, message.message_id);
     return;
   }
 
-  // ---------- ذخیره پیام‌های گروه برای later lookup ----------
+  // ---------- ذخیره پیام‌های گروه ----------
   if (isGroup) {
     await storeMessage(chatId, message.message_id, senderName, text, messageDate, env);
   }
@@ -410,14 +427,21 @@ async function handleMessage(message, env) {
     const targetText = (target.text || target.caption || '').trim();
     const targetDate = target.date || Math.floor(Date.now() / 1000);
 
+    // ⭐ ذخیره‌ی صریح پیام هدف (که مطمئن باشیم توی حافظه هست)
+    if (targetText) {
+      await storeMessage(chatId, target.message_id, targetSender, targetText, targetDate, env);
+    }
+
     const infoMsg = `📌 اطلاعات پیام:\n\n` +
       `chat_id: \`${chatId}\`\n` +
       `message_id: \`${target.message_id}\`\n` +
       `فرستنده: ${targetSender}\n` +
       `زمان: ${getIranTimestamp(targetDate)}\n` +
       `متن: ${targetText.slice(0, 200)}${targetText.length > 200 ? '...' : ''}\n\n` +
-      `برای ریپلای در چت خصوصی:\n/reply ${chatId} ${target.message_id}\n\n` +
-      `برای ویرایش (اگه پیام رباته):\n/edit ${chatId} ${target.message_id} <متن جدید>`;
+      `✅ این پیام ذخیره شد. حالا توی چت خصوصی می‌تونی:\n\n` +
+      `برای ریپلای:\n\`/reply ${chatId} ${target.message_id}\`\n\n` +
+      `با راهنما:\n\`/reply ${chatId} ${target.message_id} با محبت جواب بده\`\n\n` +
+      `برای ویرایش (اگه پیام رباته):\n\`/edit ${chatId} ${target.message_id} <متن جدید>\``;
 
     try {
       await sendMessage(senderId, infoMsg, env);
@@ -474,7 +498,6 @@ async function handleMessage(message, env) {
     if (!ok) return;
 
     const target = message.reply_to_message;
-    // فوری حذف
     await deleteMessage(chatId, message.message_id, env);
     if (!target) return;
 
@@ -497,7 +520,7 @@ async function handleMessage(message, env) {
       const rest = text.replace(/^\/reply\s*/i, '').trim();
       const parts = rest.split(/\s+/);
       if (parts.length < 2) {
-        await sendMessage(chatId, 'فرمت: /reply <chat_id> <message_id> [راهنما]\nمثال: /reply -12345 42 با محبت جواب بده', env, message.message_id);
+        await sendMessage(chatId, 'فرمت: /reply <chat_id> <message_id> [راهنما]\nمثال: /reply -1001234567890 42 با محبت جواب بده', env, message.message_id);
         return;
       }
       const targetChatId = Number(parts[0]);
@@ -513,7 +536,7 @@ async function handleMessage(message, env) {
       // پیام هدف رو از ذخیره‌گاه پیدا کن
       const target = await getStoredMessage(targetChatId, targetMessageId, env);
       if (!target) {
-        await sendMessage(chatId, '⚠️ پیام مورد نظر پیدا نشد. (ممکنه قدیمی باشه یا ربات اون رو ندیده باشه) با /infoid توی گروه چک کن.', env, message.message_id);
+        await sendMessage(chatId, '⚠️ پیام مورد نظر پیدا نشد.\n\n💡 راه‌حل: توی گروه روی همون پیام ریپلای بزن و /infoid بفرست تا ربات پیام رو ذخیره کنه، بعد دوباره /reply بزن.', env, message.message_id);
         return;
       }
 
@@ -527,7 +550,6 @@ async function handleMessage(message, env) {
     if (!ok) return;
 
     const originalMsg = message.reply_to_message;
-    // فوری حذف
     await deleteMessage(chatId, message.message_id, env);
     if (!originalMsg) return;
 
