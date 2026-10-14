@@ -383,11 +383,15 @@ async function saveHistory(chatId, history, env) {
 // ------------------------------------------------------------
 // توابع کمکی برای صحبت با API بله
 // ------------------------------------------------------------
-async function sendMessage(chatId, text, env) {
+async function sendMessage(chatId, text, env, replyToMessageId = null) {
+  const body = { chat_id: chatId, text };
+  if (replyToMessageId) {
+    body.reply_to_message_id = replyToMessageId;
+  }
   await fetch(`${baleApi(env.BALE_BOT_TOKEN)}/sendMessage`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ chat_id: chatId, text }),
+    body: JSON.stringify(body),
   });
 }
 
