@@ -1,6 +1,6 @@
 // ============================================================
 // ربات هوش مصنوعی بله (Bale) — Cloudflare Worker
-// نسخه ۲: fallback خودکار بین مدل‌ها + مکانیزم سکوت هوشمند
+// نسخه ۴: /reply هوشمند + حذف فوری پیام ادمین
 // ============================================================
 
 const MODELS = [
@@ -17,11 +17,11 @@ const FALLBACK_ORDER = ['gemma', 'llama', 'qwen', 'gpt120', 'deepseek', 'glm'];
 const IMAGE_MODEL_FAST = '@cf/black-forest-labs/flux-1-schnell';
 const IMAGE_MODEL_HQ   = '@cf/stabilityai/stable-diffusion-xl-base-1.0';
 const DEFAULT_MODEL_ID = 'gemma';
-const MAX_HISTORY = 8;
+const MAX_HISTORY = 12;
 const HISTORY_TTL = 60 * 60 * 24 * 7;
 
-// مارکر سکوت در گروه. AI فقط اگه دقیقاً همین رو بفرسته، ربات ساکت می‌مونه.
 const NO_REPLY_MARKER = '__NO_REPLY__';
+const DELETE_MARKER   = '__DELETE__';
 
 function baleApi(token) {
   return `https://tapi.bale.ai/bot${token}`;
@@ -112,16 +112,32 @@ ble.ir/join/FuGWc5CdFW
 هم باعث ترویج کتابخوانی میشه
 هم یه کار خیر جریان پیدا میکنه
 
-از این پیام های بالا فقط اطلاعات لازم رو بفهم قرار نیست دقیقا کپی اینها جواب بدی`;
+
+از این پیام های بالا فقط اطلاعات لازم رو بفهم قرار نیست دقیقا کپی اینها جواب بدی
+مثلا تو به عنوان یک ادمین گروه نباید بیخودی هی لینک گروه و کانال رو بفرستی. فقط وقتی که نیاز شد باید بفرستی . باید سیاست داشته باشی
+هر پیامی باید علت داشت باشه و درست و به موقع فرستاده شده باشه`;
 
 function buildSystemPrompt(isGroup) {
   if (isGroup) {
-    return BASE_PROMPT + `\n\nقانون مهم برای سکوت:
-تو توی گروهی و همه پیام‌ها رو می‌خونی، ولی همیشه نباید جواب بدی.
-قبل از پاسخ، خوب فکر کن بهه عنوان یک ادمین حرفه ای: آیا جواب دادن لازمه؟ 
-اگه جواب دادن لازم نیست، فقط و فقط عبارت دقیق زیر رو بنویس و هیچ چیز دیگه‌ای اضافه نکن (نه ایموجی، نه نقطه، نه فاصله اضافه):
+    return BASE_PROMPT + `\n\nقانون مهم برای سکوت و حذف:
+تو توی گروهی و همه پیام‌ها رو می‌خونی (با اسم فرستنده). ولی همیشه نباید جواب بدی.
+قبل از پاسخ، خوب فکر کن به عنوان یک ادمین حرفه‌ای:
+
+۱) اگه پیام تبلیغاتی، نامرتبط با کتاب، یا حاشیه‌ست:
+دقیقاً با این عبارت شروع کن: ${DELETE_MARKER}
+و در ادامه (خط بعد یا همون خط) تذکرت رو بنویس.
+مثال:
+${DELETE_MARKER}
+دوست عزیز، اینجا گروه کتابه و پست تبلیغاتی می‌تونه گروه رو شلوغ کنه. لطفاً پاکش کنیم که کاربردیمون حفظ بشه 🙏
+
+نکته: این پیام از طرف کاربر خودکار حذف می‌شه و تذکر تو می‌مونه.
+
+۲) اگه جواب دادن لازم نیست:
+فقط و فقط عبارت دقیق زیر رو بنویس و هیچ چیز دیگه‌ای اضافه نکن (نه ایموجی، نه نقطه، نه فاصله اضافه):
 ${NO_REPLY_MARKER}
-اگه جواب لازم یا خوبه، طبیعی و مفید جواب بده.`;
+
+۳) در غیر این صورت:
+طبیعی و مفید جواب بده.`;
   }
   return BASE_PROMPT;
 }
@@ -253,6 +269,16 @@ async function handleUpdate(update, env) {
   }
 }
 
+function getSenderName(message) {
+  const from = message.from || {};
+  const first = from.first_name || '';
+  const last = from.last_name || '';
+  const full = (first + ' ' + last).trim();
+  if (full) return full;
+  if (from.username) return from.username;
+  return 'کاربر';
+}
+
 async function handleMessage(message, env) {
   const chatId = message.chat.id;
   const chatType = message.chat.type;
@@ -261,7 +287,9 @@ async function handleMessage(message, env) {
   if (!text) return;
 
   const isGroup = (chatType === 'group' || chatType === 'supergroup');
+  const senderName = getSenderName(message);
 
+  // ---------- دستورات ----------
   if (text === '/start') {
     await sendMessage(chatId, 'سلام 👋 من «باهم کتاب» هستم، دستیار گروه امانت کتاب.\nبرای انتخاب مدل از /model استفاده کن.\nبرای ساخت تصویر: /image توضیح تصویر', env, message.message_id);
     await sendModelPicker(chatId, env);
@@ -276,6 +304,37 @@ async function handleMessage(message, env) {
   if (text === '/reset') {
     await env.KV.delete(`history:${chatId}`);
     await sendMessage(chatId, '✅ حافظه مکالمه پاک شد.', env, message.message_id);
+    return;
+  }
+
+  // ---------- /reply : ریپلای هوشمند با AI ----------
+  if (text === '/reply' || text.startsWith('/reply ') || text.startsWith('/reply\n')) {
+    const originalMsg = message.reply_to_message;
+
+    // ۱) اول فوری پیام خود ادمین رو پاک کن (قبل از هر کاری)
+    await deleteMessage(chatId, message.message_id, env);
+
+    // ۲) اگه ریپلای به پیامی نبود، تمومه
+    if (!originalMsg) {
+      return;
+    }
+
+    const originalText = (originalMsg.text || originalMsg.caption || '').trim();
+    if (!originalText) {
+      return;
+    }
+
+    const originalSender = getSenderName(originalMsg);
+    const originalId = originalMsg.message_id;
+
+    // متن راهنمای ادمین (بعد از /reply)
+    const instruction = text
+      .replace(/^\/reply\s*/i, '')
+      .replace(/\n/g, ' ')
+      .trim();
+
+    // ۳) حالا AI رو صدا بزن و جواب بساز
+    await generateReplyToMessage(chatId, originalId, originalSender, originalText, instruction, env);
     return;
   }
 
@@ -304,7 +363,7 @@ async function handleMessage(message, env) {
   if (text.startsWith('/')) return;
 
   await sendChatAction(chatId, env);
-  await replyWithAI(chatId, text, env, message.message_id, isGroup);
+  await replyWithAI(chatId, text, env, message.message_id, isGroup, senderName);
 }
 
 async function handleCallback(cb, env) {
@@ -319,6 +378,36 @@ async function handleCallback(cb, env) {
     await env.KV.put(`model:${chatId}`, modelId);
     await answerCallback(cb.id, env, `مدل ${modelDef.name} انتخاب شد`);
     await sendMessage(chatId, `✅ مدل فعال: ${modelDef.name}\nحالا سوالت رو بپرس.`, env);
+  }
+}
+
+// ------------------------------------------------------------
+// ریپلای هوشمند با AI به یک پیام خاص
+// ------------------------------------------------------------
+async function generateReplyToMessage(chatId, originalId, originalSender, originalText, instruction, env) {
+  const modelId = (await env.KV.get(`model:${chatId}`)) || DEFAULT_MODEL_ID;
+
+  const userMessage = `یک پیام توی گروه هست که یکی از اعضا نوشته. ادمین می‌خواد یه جواب مناسب به این پیام بدی.
+
+فرستنده پیام اصلی: «${originalSender}»
+متن پیام اصلی: "${originalText}"
+
+راهنمای ادمین: ${instruction || 'یک جواب طبیعی، مفید و مناسب به این پیام بده.'}
+
+حالا فقط و فقط متن جواب رو بنویس، بدون هیچ مقدمه یا توضیح اضافه.`;
+
+  try {
+    const { reply } = await runAIWithFallback(env, modelId, [
+      { role: 'system', content: BASE_PROMPT },
+      { role: 'user', content: userMessage },
+    ], 800);
+
+    if (!reply) return;
+
+    // جواب رو به عنوان ریپلای به پیام اصلی بفرست
+    await sendMessage(chatId, reply, env, originalId);
+  } catch (err) {
+    console.error('generateReplyToMessage error:', err && err.message ? err.message : String(err));
   }
 }
 
@@ -358,11 +447,13 @@ async function runAIWithFallback(env, preferredModelId, messages, maxTokens = 15
   throw lastError || new Error('All models failed to respond');
 }
 
-async function replyWithAI(chatId, text, env, replyToMessageId, isGroup) {
+async function replyWithAI(chatId, text, env, replyToMessageId, isGroup, senderName) {
   const modelId = (await env.KV.get(`model:${chatId}`)) || DEFAULT_MODEL_ID;
 
   const history = await getHistory(chatId, env);
-  history.push({ role: 'user', content: text });
+
+  const userContent = isGroup ? `${senderName}: ${text}` : text;
+  history.push({ role: 'user', content: userContent });
 
   const systemPrompt = buildSystemPrompt(isGroup);
 
@@ -374,6 +465,18 @@ async function replyWithAI(chatId, text, env, replyToMessageId, isGroup) {
 
     if (isGroup) {
       const trimmed = reply.trim();
+
+      if (trimmed.includes(DELETE_MARKER)) {
+        const warningText = trimmed.replace(DELETE_MARKER, '').trim();
+        await deleteMessage(chatId, replyToMessageId, env);
+        if (warningText) {
+          await sendMessage(chatId, warningText, env);
+        }
+        history.pop();
+        await saveHistory(chatId, history, env);
+        return;
+      }
+
       if (trimmed === NO_REPLY_MARKER || trimmed.includes(NO_REPLY_MARKER)) {
         const cleaned = trimmed.replace(NO_REPLY_MARKER, '').trim();
         if (!cleaned) {
@@ -463,6 +566,21 @@ async function sendMessage(chatId, text, env, replyToMessageId = null) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
+}
+
+async function deleteMessage(chatId, messageId, env) {
+  try {
+    const res = await fetch(`${baleApi(env.BALE_BOT_TOKEN)}/deleteMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: chatId, message_id: messageId }),
+    });
+    if (!res.ok) {
+      console.error('deleteMessage failed:', res.status, await res.text());
+    }
+  } catch (err) {
+    console.error('deleteMessage error:', err && err.message ? err.message : String(err));
+  }
 }
 
 async function sendChatAction(chatId, env, action = 'typing') {
