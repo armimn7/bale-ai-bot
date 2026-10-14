@@ -1,6 +1,6 @@
 // ============================================================
 // ربات هوش مصنوعی بله (Bale) — Cloudflare Worker
-// نسخه ۵: حذف با ریپلای + دستور ویرایش پیام ربات
+// نسخه ۶: رفتار انسانی‌تر + اتصال متقاضی و صاحب کتاب
 // ============================================================
 
 const MODELS = [
@@ -17,7 +17,7 @@ const FALLBACK_ORDER = ['gemma', 'llama', 'qwen', 'gpt120', 'deepseek', 'glm'];
 const IMAGE_MODEL_FAST = '@cf/black-forest-labs/flux-1-schnell';
 const IMAGE_MODEL_HQ   = '@cf/stabilityai/stable-diffusion-xl-base-1.0';
 const DEFAULT_MODEL_ID = 'gemma';
-const MAX_HISTORY = 12;
+const MAX_HISTORY = 16;
 const HISTORY_TTL = 60 * 60 * 24 * 7;
 
 const NO_REPLY_MARKER = '__NO_REPLY__';
@@ -32,6 +32,8 @@ function baleApi(token) {
 // ------------------------------------------------------------
 const BASE_PROMPT = `اسم تو ربات «باهم کتاب» هست. تو عضو تیم امانت دوست داشتنی هستی و یکی از مدیریت کننده های خوب گروه امانت دوست داشتنی.باید به زبان محاوره‌ای و محترمانه و با استفاده مناسب و بامزه از ایموجی‌ها و خیلی صمیمی ولی محترمانه جواب بدی 
 از افعال جمع هم تا جای امکان استفاده کن که احترام حفظ بشه ولی صمیمی و دوست داشتنی باش.
+از خطاب هایی مثل علی عزیز یا زهرا جان و... پرهیز کن تا جای ممکن که یه وقت برای کسی سوء تفاهم پیش نیاد. میتونی بعضی اوقات خطاب انجام بدی ولی باید خیلی اختیاط داشته باشی
+ضمن اینکه اصلا خیلی از اوقات بعضی کاربر ها اسمشون اصلا مشخص نمیکنه چیه حتی جنسیتشون رو هم مشخص نمیکنه
 تو یکی از ادمین‌های گروه امانت دوست‌داشتنی هستی باید مثل یه ادمین حرفه ای باشی و اصولی جواب بدی و باید به اعضا کمک کنی کتاب امانت بدن یا کتاب امانت بگیرن.
 و به این کار هم تشویقشون کنی و انگیزه بدی.
 اگه کتابی رو نمی‌شناسی نباید به هیچ وجه دربارش توضیح بدی و از خودت نباید چیزی بگی . اصلا پیش فرضت این باشه که کتابی رو نمیشناسی. چون هنوز ربات کاملی نشدی.
@@ -115,13 +117,29 @@ ble.ir/join/FuGWc5CdFW
 
 از این پیام های بالا فقط اطلاعات لازم رو بفهم قرار نیست دقیقا کپی اینها جواب بدی
 مثلا تو به عنوان یک ادمین گروه نباید بیخودی هی لینک گروه و کانال رو بفرستی. فقط وقتی که نیاز شد باید بفرستی . باید سیاست داشته باشی
-هر پیامی باید علت داشت باشه و درست و به موقع فرستاده شده باشه`;
+هر پیامی باید علت داشت باشه و درست و به موقع فرستاده شده باشه
+
+قوانین مهم رفتار طبیعی (خیلی مهم):
+1)وقتی چیزی رو نمیدونی نگو. تو فقط ادمین گروه هستی و کارت مدیریت گروه و تشویق و راهنمایی عمومی اعضا در امانت دادن یا گرفتن کتاب هست. 
+به سوالات دیگه اصلا نباید جواب بدی 
+۲) از قالب‌های تکراری پرهیز کن. مثلا هر بار نگو «X عزیز» یا «بقیه اعضای عزیز» یا «ایشالا». اینا کلیشه هستن و بار دوم به بعد مسخره می‌شن.
+۳) جواب کوتاه و مستقیم. اگه با یک جمله می‌شه جواب داد، همون یک جمله کافیه. پاراگراف طولانی ننویس.
+۴) اسم فرستنده‌ها توی متن پیام‌ها با فرمت «اسم: متن» مشخصه. حواست باشه کی داره حرف می‌زنه و با کی طرفه.
+۵) نقش افراد رو تشخیص بده:
+   - «صاحب کتاب»: کسی که می‌گه «من دارم» یا «کتابم رو امانت می‌دم».
+   - «متقاضی»: کسی که کتابی رو می‌خواد یا می‌پرسه «چطوری امانت بگیرم».
+۶) وقتی یکی می‌گه «دارم» و یکی می‌پرسه «چطوری ازت امانت بگیرم» → اینا رو مستقیم به هم وصل کن. مثلا بنویس: «[اسم صاحب کتاب] جان، [اسم متقاضی] می‌خواد این کتاب رو ازتون بگیره. با هم هماهنگ کنید.» یا حتی شماره/راه ارتباطی رو اگه داری بگو.
+۷) همیشه فقط یه توضیح کلی و آموزشی نده وقتی می‌تونی مستقیم به موقعیت جواب بدی. مثلا اگه کسی می‌پرسه «چطوری امانت بگیرم ازت؟» نگو «کافیه اسم کتاب رو بنویسید...». باید بگی «با [اسم صاحب کتاب] هماهنگ کنید» فقط وقتی نیاز به راهنمایی عمومی هست عمومی راهنمایی کن بادی بتونی اینا رو تمییز بدی..
+۸) مثل یه آدم واقعی که توی گروه چت می‌کنه تایپ کن. آدم واقعی توی هر پیام درس نمی‌ده، گاهی فقط یه جمله کوتاه می‌گه، گاهی سوال می‌پرسه، گاهی تشویق می‌کنه.`;
 
 function buildSystemPrompt(isGroup) {
   if (isGroup) {
     return BASE_PROMPT + `\n\nقانون مهم برای سکوت و حذف:
 تو توی گروهی و همه پیام‌ها رو می‌خونی (با اسم فرستنده). ولی همیشه نباید جواب بدی.
-قبل از پاسخ، خوب فکر کن به عنوان یک ادمین حرفه‌ای:
+قبل از پاسخ، خوب فکر کن به عنوان یک ادمین حرفه‌ای. لزومی نداره به هر پیامی جواب بدی. باید سیاست داشته باشی که ما رو به هدف اصلی 
+یعنی فعال شدن گروه ببره نه چیز دیگه ای  و زیاده روی هم به این هدف لطمه میزنه:
+جدای این باز هم نباید به هر سوالی جواب بدی . تو فقط ادمین مدیریت گروه هستی و وظیفت فعال و با نشاط نکه داشتن گروه هست و تشویق اعضا به امانت دادن یا گرفتن کتاب
+
 
 ۱) اگه پیام تبلیغاتی، نامرتبط با کتاب، یا حاشیه‌ست:
 دقیقاً با این عبارت شروع کن: ${DELETE_MARKER}
@@ -131,7 +149,7 @@ ${DELETE_MARKER}
 دوست عزیز، اینجا گروه کتابه و پست تبلیغاتی می‌تونه گروه رو شلوغ کنه. لطفاً پاکش کنیم که کاربردیمون حفظ بشه 🙏
 
 نکته: این پیام از طرف کاربر خودکار حذف می‌شه و تذکر تو می‌مونه.
-دقت کن اشتباه نکنی مثلا قرآن هم جزو کتاب ها محسوب میشه و اگه کسی مطلبی در این باره نوشت ایرادی نداره. این نکته خیلی خیلی مهمه!!!! آیه و قران و امثالهم مموع نیست اینا هم مربوط به کتاب هستن دیگه.
+دقت کن اشتباه نکنی مثلا قرآن و آیه هاش و... هم جزو کتاب ها محسوب میشه و اگه کسی مطلبی در این باره نوشت ایرادی نداره. 
 ۲) اگه جواب دادن لازم نیست:
 فقط و فقط عبارت دقیق زیر رو بنویس و هیچ چیز دیگه‌ای اضافه نکن (نه ایموجی، نه نقطه، نه فاصله اضافه):
 ${NO_REPLY_MARKER}
@@ -289,7 +307,6 @@ async function handleMessage(message, env) {
   const isGroup = (chatType === 'group' || chatType === 'supergroup');
   const senderName = getSenderName(message);
 
-  // ---------- دستورات ----------
   if (text === '/start') {
     await sendMessage(chatId, 'سلام 👋 من «باهم کتاب» هستم، دستیار گروه امانت کتاب.\nبرای انتخاب مدل از /model استفاده کن.\nبرای ساخت تصویر: /image توضیح تصویر', env, message.message_id);
     await sendModelPicker(chatId, env);
@@ -307,57 +324,30 @@ async function handleMessage(message, env) {
     return;
   }
 
-  // ---------- /edit : ویرایش پیام ربات با ریپلای ----------
-  // فرمت: روی پیام ربات ریپلای بزن و بنویس /edit متن جدید
-  // یا فقط /edit بفرست تا پیام ویرایش و پاک بشه.
   if (text === '/edit' || text.startsWith('/edit ') || text.startsWith('/edit\n')) {
     const target = message.reply_to_message;
-
-    // فوری پیام خود ادمین رو پاک کن
     await deleteMessage(chatId, message.message_id, env);
-
     if (!target) return;
-
-    // فقط اگه پیام مقصد از طرف ربات باشه
     const isBotMessage = target.from && target.from.is_bot;
     if (!isBotMessage) return;
-
-    const newText = text
-      .replace(/^\/edit\s*/i, '')
-      .replace(/\r/g, '')
-      .trim();
-
-    // اگه متن جدید خالی بود (فقط /edit فرستاده شده)
+    const newText = text.replace(/^\/edit\s*/i, '').replace(/\r/g, '').trim();
     if (!newText) {
-      // پیام ربات رو حذف کن
       await deleteMessage(chatId, target.message_id, env);
       return;
     }
-
-    // ویرایش پیام ربات
     await editMessageText(chatId, target.message_id, newText, env);
     return;
   }
 
-  // ---------- /reply : ریپلای هوشمند با AI ----------
   if (text === '/reply' || text.startsWith('/reply ') || text.startsWith('/reply\n')) {
     const originalMsg = message.reply_to_message;
-
     await deleteMessage(chatId, message.message_id, env);
-
     if (!originalMsg) return;
-
     const originalText = (originalMsg.text || originalMsg.caption || '').trim();
     if (!originalText) return;
-
     const originalSender = getSenderName(originalMsg);
     const originalId = originalMsg.message_id;
-
-    const instruction = text
-      .replace(/^\/reply\s*/i, '')
-      .replace(/\n/g, ' ')
-      .trim();
-
+    const instruction = text.replace(/^\/reply\s*/i, '').replace(/\n/g, ' ').trim();
     await generateReplyToMessage(chatId, originalId, originalSender, originalText, instruction, env);
     return;
   }
@@ -405,9 +395,6 @@ async function handleCallback(cb, env) {
   }
 }
 
-// ------------------------------------------------------------
-// ریپلای هوشمند با AI به یک پیام خاص
-// ------------------------------------------------------------
 async function generateReplyToMessage(chatId, originalId, originalSender, originalText, instruction, env) {
   const modelId = (await env.KV.get(`model:${chatId}`)) || DEFAULT_MODEL_ID;
 
@@ -434,9 +421,6 @@ async function generateReplyToMessage(chatId, originalId, originalSender, origin
   }
 }
 
-// ------------------------------------------------------------
-// فراخوانی Workers AI با fallback خودکار بین مدل‌ها
-// ------------------------------------------------------------
 async function runAIWithFallback(env, preferredModelId, messages, maxTokens = 1536) {
   const order = [preferredModelId];
   for (const id of FALLBACK_ORDER) {
@@ -489,18 +473,12 @@ async function replyWithAI(chatId, text, env, replyToMessageId, isGroup, senderN
     if (isGroup) {
       const trimmed = reply.trim();
 
-      // حذف: اول ریپلای تذکر، بعد حذف پیام کاربر
       if (trimmed.includes(DELETE_MARKER)) {
         const warningText = trimmed.replace(DELETE_MARKER, '').trim();
-
-        // ۱) اول تذکر رو به عنوان ریپلای به پیام کاربر بفرست
         if (warningText) {
           await sendMessage(chatId, warningText, env, replyToMessageId);
         }
-
-        // ۲) بعد پیام کاربر رو حذف کن (ریپلای باقی می‌مونه)
         await deleteMessage(chatId, replyToMessageId, env);
-
         history.pop();
         await saveHistory(chatId, history, env);
         return;
