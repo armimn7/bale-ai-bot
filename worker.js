@@ -502,10 +502,8 @@ async function handleMessage(message, env) {
 
   // ---------- /reply ----------
   if (text === '/reply' || text.startsWith('/reply ') || text.startsWith('/reply\n')) {
-    const ok = await checkIsAdmin(chatId, senderId, env);
-    if (!ok) return;
-
     const parsed = parseReplyArgs(text, isGroup, message);
+
     if (!parsed) {
       if (!isGroup) {
         await sendMessage(chatId, 'فرمت: `/reply <chat_id> <message_id> [راهنما]`', env, message.message_id);
@@ -516,6 +514,18 @@ async function handleMessage(message, env) {
       return;
     }
 
+    // چک ادمین بودن توی گروه هدف (نه chatId فعلی که ممکنه چت خصوصی باشه)
+    const okTarget = await checkIsAdmin(parsed.chatId, senderId, env);
+    if (!okTarget) {
+      if (!isGroup) {
+        await sendMessage(chatId, '⚠️ شما ادمین آن گروه نیستید.', env, message.message_id);
+      } else {
+        await deleteMessage(chatId, message.message_id, env);
+      }
+      return;
+    }
+
+    // اگه توی گروه هستیم، پیام دستور رو حذف کن
     if (isGroup) {
       await deleteMessage(chatId, message.message_id, env);
     }
