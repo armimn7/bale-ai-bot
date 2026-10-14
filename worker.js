@@ -1,6 +1,6 @@
 // ============================================================
 // ربات هوش مصنوعی بله (Bale) — Cloudflare Worker
-// نسخه ۱۶: /reply صمیمی + استفاده از کل حافظه گروه
+// نسخه ۱۷: /reply با مدل قوی + پرامپت صریح‌تر
 // ============================================================
 
 const MODELS = [
@@ -17,6 +17,7 @@ const FALLBACK_ORDER = ['gemma', 'llama', 'qwen', 'gpt120', 'deepseek', 'glm'];
 const IMAGE_MODEL_FAST = '@cf/black-forest-labs/flux-1-schnell';
 const IMAGE_MODEL_HQ   = '@cf/stabilityai/stable-diffusion-xl-base-1.0';
 const DEFAULT_MODEL_ID = 'gemma';
+const REPLY_MODEL_ID = 'gpt120'; // مدل قوی برای /reply
 
 const MAX_HISTORY = 20;
 const HISTORY_TTL = 60 * 60 * 24 * 7;
@@ -192,32 +193,33 @@ ble.ir/join/FuGWc5CdFW
 ⚠️ تو توی پاسخ‌هات هرگز نباید این پیشوند تاریخ/ساعت یا اسم خودت («باهم کتاب:») رو بنویسی. فقط و فقط متن خالص جواب رو بنویس.`;
 
 // ============================================================
-// پرامپت مخصوص /reply — صمیمی و انسانی
+// پرامپت مخصوص /reply — صمیمی و صریح
 // ============================================================
 const REPLY_SYSTEM_PROMPT = `تو «باهم کتاب» هستی، یکی از ادمین‌های گروه «امانت دوست داشتنی».
 
-شخصیت تو دقیقاً مثل یک ادمین انسانی و صمیمیه که داره توی گروه کتاب چت می‌کنه:
-- صمیمی، دوستانه، گرم، بامزه و محترمانه.
-- از ایموجی‌ها به‌اندازه و طبیعی استفاده می‌کنی (مثل یه آدم واقعی، نه خسیس نه افراطی).
-- فارسی محاوره‌ای و روان حرف می‌زنی، نه رسمی و خشک.
+شخصیت تو: یه ادمین انسانی، صمیمی، گرم، بامزه و محترم. مثل یه آدم واقعی که توی گروه کتاب چت می‌کنه.
 
-⚠️ چند تا قانون مهم که رعایت کن:
+⚠️ قوانین مهم:
 
-۱) افعال جمع برای احترام: «بگیرید»، «بدید»، «بتونید»، «می‌تونید»، «دارید». ولی این باعث نشه لحنت رسمی بشه. صمیمی بمون.
+۱) افعال جمع برای احترام: «بگیرید»، «بدید»، «بتونید»، «می‌تونید»، «دارید». ولی لحنت صمیمی و دوستانه بمونه، نه رسمی.
 
-۲) اسم طرف رو صدا نزن (نه «محمود جان»، نه هیچ اسم دیگه). این برای جلوگیری از سوءتفاهمه.
+۲) اسم طرف رو صدا نزن. نه «محمود جان»، نه هیچ اسم دیگه. این برای جلوگیری از سوءتفاهمه.
 
-۳) دستور ادمین رو دقیق و کامل اجرا کن. اگه گفته «تشکر کن»، تشکر کن. اگه گفته «بدون اغراق»، اغراق نکن.
+۳) از خودت چیزی نساز. اگه چیزی توی کانتکست نیست، راجع بهش حرف نزن. کلماتی مثل «تاپیک»، «پست»، «فروم» رو استفاده نکن چون اینا توی گروه تلگرامی معنی ندارن.
 
-۴) فقط به «[پیام هدف]» جواب بده، نه به کانتکست.
+۴) فقط به «[پیام هدف]» جواب بده — نه به پیام‌های کانتکست.
 
-۵) اگه کانتکست گروه یا پیام‌های قبلی داری، ازشون استفاده کن تا جواب مرتبط و درست بدی. مثلاً اگه یکی گفته «کتاب X رو می‌خوام» و یکی دیگه گفته «من دارم»، متوجه بشی که باید این دو نفر رو به هم وصل کنی.
+۵) دستور ادمین رو دقیق و کامل اجرا کن. اگه گفته «تشکر کن»، تشکر کن. اگه گفته «بدون اغراق»، اغراق نکن.
 
-۶) طول جواب: ۱ تا ۳ خط معمولاً کافیه. ولی اگه موقعیت نیاز داره (مثلاً توضیح یا راهنمایی خاص)، می‌تونی بیشتر بنویسی.
+۶) از ایموجی به‌اندازه و طبیعی استفاده کن — مثل یه آدم واقعی توی چت، نه خسیس نه افراطی.
 
-۷) هیچ‌وقت خودت رو «هوش مصنوعی» یا «ربات» معرفی نکن. تو یه ادمین انسانی هستی.
+۷) طول جواب: ۱ تا ۳ خط معمولاً کافیه.
 
-حالا پیام و دستور رو بخون و فقط متن خالص جواب رو بنویس (بدون مقدمه، بدون توضیح اضافه).`;
+۸) اگه توی کانتکست یکی از کتابی حرف زده و یکی دیگه گفته «من دارم» یا «می‌تونم»، می‌تونی این دو نفر رو به هم وصل کنی و بگی با هم هماهنگ کنن. (بدون اسم بردن)
+
+۹) هیچ‌وقت خودت رو «هوش مصنوعی» یا «ربات» معرفی نکن. تو یه ادمین انسانی هستی.
+
+حالا پیام و دستور رو بخون و فقط متن خالص جواب رو بنویس.`;
 
 function buildSystemPrompt(isGroup) {
   if (isGroup) {
@@ -327,13 +329,12 @@ async function handleMessage(message, env) {
   const isGroup = (chatType === 'group' || chatType === 'supergroup');
   const messageDate = message.date || Math.floor(Date.now() / 1000);
 
-  // ذخیره‌ی خودکار پیام‌های reply_to_message (چون بله پیام‌های عادی رو نشون نمی‌ده)
+  // ذخیره‌ی خودکار پیام‌های reply_to_message
   if (isGroup && message.reply_to_message) {
     const rtm = message.reply_to_message;
     const rtmText = (rtm.text || rtm.caption || '').trim();
     if (rtmText) {
       await storeMessage(chatId, rtm.message_id, getSenderName(rtm), rtmText, rtm.date || Math.floor(Date.now() / 1000), env);
-      // اگه خود پیام هدف هم ریپلای به یکی دیگه بود، اون رو هم ذخیره کن
       if (rtm.reply_to_message) {
         const inner = rtm.reply_to_message;
         const innerText = (inner.text || inner.caption || '').trim();
@@ -359,7 +360,6 @@ async function handleMessage(message, env) {
     return;
   }
 
-  // هر پیام گروه رو ذخیره کن (اگه ربات ببینتش)
   if (isGroup) {
     await storeMessage(chatId, message.message_id, senderName, text, messageDate, env);
   }
@@ -376,7 +376,6 @@ async function handleMessage(message, env) {
 
     if (targetText) {
       await storeMessage(chatId, target.message_id, targetSender, targetText, targetDate, env);
-      // زنجیره‌ی پدرها رو هم ذخیره کن
       let current = target;
       let depth = 0;
       while (current.reply_to_message && depth < 5) {
@@ -514,7 +513,6 @@ async function handleMessage(message, env) {
       return;
     }
 
-    // چک ادمین بودن توی گروه هدف (نه chatId فعلی که ممکنه چت خصوصی باشه)
     const okTarget = await checkIsAdmin(parsed.chatId, senderId, env);
     if (!okTarget) {
       if (!isGroup) {
@@ -525,7 +523,6 @@ async function handleMessage(message, env) {
       return;
     }
 
-    // اگه توی گروه هستیم، پیام دستور رو حذف کن
     if (isGroup) {
       await deleteMessage(chatId, message.message_id, env);
     }
@@ -682,18 +679,18 @@ async function clearAllMessages(chatId, env) {
 }
 
 // ============================================================
-// /reply — از همه‌ی حافظه استفاده می‌کنه
+// /reply — با مدل قوی و پرامپت صریح
 // ============================================================
 async function generateReplyToMessage(chatId, originalId, originalSender, originalText, originalDate, instruction, env) {
-  const modelId = (await env.KV.get(`model:${chatId}`)) || DEFAULT_MODEL_ID;
+  // برای /reply همیشه از مدل قوی استفاده کن
+  const modelId = REPLY_MODEL_ID;
 
-  // همه‌ی پیام‌های ذخیره‌شده رو بگیر
   const allMsgs = await getAllStoredMessages(chatId, env);
 
   let contextLines = '';
   if (allMsgs && allMsgs.length) {
     contextLines = allMsgs
-      .filter((m) => m.messageId !== originalId)  // پیام هدف رو از کانتکست حذف کن
+      .filter((m) => m.messageId !== originalId)
       .map((m) => `[${getIranTimestamp(m.date)}] ${m.sender}: ${m.text}`)
       .join('\n');
   }
@@ -701,9 +698,11 @@ async function generateReplyToMessage(chatId, originalId, originalSender, origin
   const targetTimestamp = getIranTimestamp(originalDate);
 
   let userMessage = '';
+
   if (contextLines) {
     userMessage += `[کانتکست گروه — فقط برای درک موقعیت، به اینها جواب نده]\n${contextLines}\n\n`;
   }
+
   userMessage += `[پیام هدف — فقط به این جواب بده]\n`;
   userMessage += `فرستنده: ${originalSender}\n`;
   userMessage += `زمان: ${targetTimestamp}\n`;
@@ -713,7 +712,10 @@ async function generateReplyToMessage(chatId, originalId, originalSender, origin
     userMessage += `[دستور ادمین — دقیقاً این رو اجرا کن]\n${instruction}\n\n`;
   }
 
-  userMessage += `حالا فقط و فقط متن خالص جواب به «پیام هدف» رو بنویس.`;
+  userMessage += `حالا فقط و فقط متن خالص جواب به «پیام هدف» رو بنویس. یادت باشه:
+- اگه چیزی رو توی کانتکست نمی‌بینی، از خودت نساز.
+- به «[پیام هدف]» جواب بده — نه به پیام‌های قبل یا بعدش.
+- اگه توی کانتکست کسی از کتابی حرف زده و کسی دیگه گفته «من دارم» یا «می‌تونم»، می‌تونی این دو نفر رو به هم وصل کنی (بدون اسم بردن).`;
 
   try {
     const { reply } = await runAIWithFallback(env, modelId, [
