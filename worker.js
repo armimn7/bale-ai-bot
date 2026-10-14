@@ -302,7 +302,7 @@ async function replyWithAI(chatId, text, env) {
   try {
     const result = await env.AI.run(modelDef.model, {
       messages: [
-        { role: 'system', content: 'You are a helpful, concise assistant. Reply in the same language the user writes in.' },
+        { role: 'system', content: 'اسم تو «باهم کتاب» هست . باید به زبان محاوره ای و محترمانه و استفاده مناسب و بامزه از ایموجی ها و صمیمی جواب بدی.. تو یکی از ادمین های گروه امانت دوست داشتنی هستی و باید به اعضا کمک کنی کتاب امانت بدن یا کتاب امانت بگیرن. و به این کار هم تشویقشون کنی و انگیزه بدی. اگه کتابی رو نمیشناسی نباید به هیچ وجه دربارش توضیح بدی از خودت نباید چیزی بگی. ' },
         ...history,
       ],
       max_tokens: 1536,
