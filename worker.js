@@ -1,6 +1,6 @@
 // ============================================================
 // ربات هوش مصنوعی بله (Bale) — Cloudflare Worker
-// نسخه ۴: /reply هوشمند + حذف فوری پیام ادمین
+// نسخه ۵: حذف با ریپلای + دستور ویرایش پیام ربات
 // ============================================================
 
 const MODELS = [
@@ -30,7 +30,7 @@ function baleApi(token) {
 // ------------------------------------------------------------
 // System Prompt
 // ------------------------------------------------------------
-const BASE_PROMPT = `اسم تو ربات «باهم کتاب» هست. باید به زبان محاوره‌ای و محترمانه و با استفاده مناسب و بامزه از ایموجی‌ها و خیلی صمیمی ولی محترمانه جواب بدی 
+const BASE_PROMPT = `اسم تو ربات «باهم کتاب» هست. تو عضو تیم امانت دوست داشتنی هستی و یکی از مدیریت کننده های خوب گروه امانت دوست داشتنی.باید به زبان محاوره‌ای و محترمانه و با استفاده مناسب و بامزه از ایموجی‌ها و خیلی صمیمی ولی محترمانه جواب بدی 
 از افعال جمع هم تا جای امکان استفاده کن که احترام حفظ بشه ولی صمیمی و دوست داشتنی باش.
 تو یکی از ادمین‌های گروه امانت دوست‌داشتنی هستی باید مثل یه ادمین حرفه ای باشی و اصولی جواب بدی و باید به اعضا کمک کنی کتاب امانت بدن یا کتاب امانت بگیرن.
 و به این کار هم تشویقشون کنی و انگیزه بدی.
@@ -131,7 +131,7 @@ ${DELETE_MARKER}
 دوست عزیز، اینجا گروه کتابه و پست تبلیغاتی می‌تونه گروه رو شلوغ کنه. لطفاً پاکش کنیم که کاربردیمون حفظ بشه 🙏
 
 نکته: این پیام از طرف کاربر خودکار حذف می‌شه و تذکر تو می‌مونه.
-
+دقت کن اشتباه نکنی مثلا قرآن هم جزو کتاب ها محسوب میشه و اگه کسی مطلبی در این باره نوشت ایرادی نداره. 
 ۲) اگه جواب دادن لازم نیست:
 فقط و فقط عبارت دقیق زیر رو بنویس و هیچ چیز دیگه‌ای اضافه نکن (نه ایموجی، نه نقطه، نه فاصله اضافه):
 ${NO_REPLY_MARKER}
@@ -307,33 +307,57 @@ async function handleMessage(message, env) {
     return;
   }
 
+  // ---------- /edit : ویرایش پیام ربات با ریپلای ----------
+  // فرمت: روی پیام ربات ریپلای بزن و بنویس /edit متن جدید
+  // یا فقط /edit بفرست تا پیام ویرایش و پاک بشه.
+  if (text === '/edit' || text.startsWith('/edit ') || text.startsWith('/edit\n')) {
+    const target = message.reply_to_message;
+
+    // فوری پیام خود ادمین رو پاک کن
+    await deleteMessage(chatId, message.message_id, env);
+
+    if (!target) return;
+
+    // فقط اگه پیام مقصد از طرف ربات باشه
+    const isBotMessage = target.from && target.from.is_bot;
+    if (!isBotMessage) return;
+
+    const newText = text
+      .replace(/^\/edit\s*/i, '')
+      .replace(/\r/g, '')
+      .trim();
+
+    // اگه متن جدید خالی بود (فقط /edit فرستاده شده)
+    if (!newText) {
+      // پیام ربات رو حذف کن
+      await deleteMessage(chatId, target.message_id, env);
+      return;
+    }
+
+    // ویرایش پیام ربات
+    await editMessageText(chatId, target.message_id, newText, env);
+    return;
+  }
+
   // ---------- /reply : ریپلای هوشمند با AI ----------
   if (text === '/reply' || text.startsWith('/reply ') || text.startsWith('/reply\n')) {
     const originalMsg = message.reply_to_message;
 
-    // ۱) اول فوری پیام خود ادمین رو پاک کن (قبل از هر کاری)
     await deleteMessage(chatId, message.message_id, env);
 
-    // ۲) اگه ریپلای به پیامی نبود، تمومه
-    if (!originalMsg) {
-      return;
-    }
+    if (!originalMsg) return;
 
     const originalText = (originalMsg.text || originalMsg.caption || '').trim();
-    if (!originalText) {
-      return;
-    }
+    if (!originalText) return;
 
     const originalSender = getSenderName(originalMsg);
     const originalId = originalMsg.message_id;
 
-    // متن راهنمای ادمین (بعد از /reply)
     const instruction = text
       .replace(/^\/reply\s*/i, '')
       .replace(/\n/g, ' ')
       .trim();
 
-    // ۳) حالا AI رو صدا بزن و جواب بساز
     await generateReplyToMessage(chatId, originalId, originalSender, originalText, instruction, env);
     return;
   }
@@ -404,7 +428,6 @@ async function generateReplyToMessage(chatId, originalId, originalSender, origin
 
     if (!reply) return;
 
-    // جواب رو به عنوان ریپلای به پیام اصلی بفرست
     await sendMessage(chatId, reply, env, originalId);
   } catch (err) {
     console.error('generateReplyToMessage error:', err && err.message ? err.message : String(err));
@@ -466,12 +489,18 @@ async function replyWithAI(chatId, text, env, replyToMessageId, isGroup, senderN
     if (isGroup) {
       const trimmed = reply.trim();
 
+      // حذف: اول ریپلای تذکر، بعد حذف پیام کاربر
       if (trimmed.includes(DELETE_MARKER)) {
         const warningText = trimmed.replace(DELETE_MARKER, '').trim();
-        await deleteMessage(chatId, replyToMessageId, env);
+
+        // ۱) اول تذکر رو به عنوان ریپلای به پیام کاربر بفرست
         if (warningText) {
-          await sendMessage(chatId, warningText, env);
+          await sendMessage(chatId, warningText, env, replyToMessageId);
         }
+
+        // ۲) بعد پیام کاربر رو حذف کن (ریپلای باقی می‌مونه)
+        await deleteMessage(chatId, replyToMessageId, env);
+
         history.pop();
         await saveHistory(chatId, history, env);
         return;
@@ -566,6 +595,25 @@ async function sendMessage(chatId, text, env, replyToMessageId = null) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
+}
+
+async function editMessageText(chatId, messageId, newText, env) {
+  try {
+    const res = await fetch(`${baleApi(env.BALE_BOT_TOKEN)}/editMessageText`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: chatId,
+        message_id: messageId,
+        text: newText,
+      }),
+    });
+    if (!res.ok) {
+      console.error('editMessageText failed:', res.status, await res.text());
+    }
+  } catch (err) {
+    console.error('editMessageText error:', err && err.message ? err.message : String(err));
+  }
 }
 
 async function deleteMessage(chatId, messageId, env) {
